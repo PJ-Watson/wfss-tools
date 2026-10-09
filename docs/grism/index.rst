@@ -1,4 +1,4 @@
-.. _niriss-tools-grism:
+.. _wfss-tools-grism:
 
 *******************
 Grism Modelling

@@ -1,5 +1,5 @@
 Reference/API
 *************
 
-.. automodapi:: niriss_tools.isophotal
+.. automodapi:: wfss_tools.isophotal
    :inherited-members:

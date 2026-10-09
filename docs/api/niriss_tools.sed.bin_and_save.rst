@@ -1,6 +1,6 @@
 bin_and_save
 ============
 
-.. currentmodule:: niriss_tools.sed
+.. currentmodule:: wfss_tools.sed
 
 .. autofunction:: bin_and_save

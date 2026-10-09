@@ -1,6 +1,6 @@
 check_coverage
 ==============
 
-.. currentmodule:: niriss_tools.grism
+.. currentmodule:: wfss_tools.grism
 
 .. autofunction:: check_coverage

@@ -1,7 +1,7 @@
 ExtendedModelGalaxy
 ===================
 
-.. currentmodule:: niriss_tools.grism
+.. currentmodule:: wfss_tools.grism
 
 .. autoclass:: ExtendedModelGalaxy
    :show-inheritance:

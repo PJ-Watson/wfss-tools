@@ -1,7 +1,7 @@
 BagpipesSampler
 ===============
 
-.. currentmodule:: niriss_tools.grism
+.. currentmodule:: wfss_tools.grism
 
 .. autoclass:: BagpipesSampler
    :show-inheritance:

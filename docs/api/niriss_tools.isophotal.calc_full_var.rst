@@ -1,6 +1,6 @@
 calc_full_var
 =============
 
-.. currentmodule:: niriss_tools.isophotal
+.. currentmodule:: wfss_tools.isophotal
 
 .. autofunction:: calc_full_var

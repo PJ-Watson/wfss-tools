@@ -1013,7 +1013,7 @@ class BagpipesSampler(object):
             ``rm_line``. By default ``False``.
         **model_kwargs : dict, optional
             Any additional keyword arguments to pass to
-            `~niriss_tools.grism.specgen.ExtendedModelGalaxy`.
+            `~wfss_tools.grism.specgen.ExtendedModelGalaxy`.
 
         Returns
         -------

@@ -1,4 +1,4 @@
 Reference/API
 *************
 
-.. automodapi:: niriss_tools.grism
+.. automodapi:: wfss_tools.grism

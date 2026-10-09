@@ -1,7 +1,7 @@
 MultiRegionFit
 ==============
 
-.. currentmodule:: niriss_tools.grism
+.. currentmodule:: wfss_tools.grism
 
 .. autoclass:: MultiRegionFit
    :show-inheritance:

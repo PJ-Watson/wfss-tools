@@ -1,4 +1,4 @@
-.. _niriss-tools-pipeline:
+.. _wfss-tools-pipeline:
 
 *******************
 Pipeline

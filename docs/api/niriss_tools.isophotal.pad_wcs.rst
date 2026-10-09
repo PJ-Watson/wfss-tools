@@ -1,6 +1,6 @@
 pad_wcs
 =======
 
-.. currentmodule:: niriss_tools.isophotal
+.. currentmodule:: wfss_tools.isophotal
 
 .. autofunction:: pad_wcs

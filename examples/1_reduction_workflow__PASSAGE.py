@@ -17,7 +17,7 @@ os.environ["CRDS_CONTEXT"] = "jwst_1413.pmap"
 # Set to "NGDEEP" to use those calibrations
 os.environ["NIRISS_CALIB"] = "GRIZLI"
 
-from niriss_tools import pipeline
+from wfss_tools import pipeline
 
 root_dir = os.getenv("ROOT_DIR")
 field_name = "par028"
@@ -100,9 +100,8 @@ if __name__ == "__main__":
         if not (Path.cwd() / f"{field_name}-ir.cat.fits").is_file():
 
             from astropy.wcs import WCS
-
-            from niriss_tools.isophotal import reproject_image
-            from niriss_tools.pipeline import regen_catalogue
+            from wfss_tools.isophotal import reproject_image
+            from wfss_tools.pipeline import regen_catalogue
 
             # Or whatever name you came up with during the previous reduction
             old_seg_name = passage_dir / f"{field_name.capitalize()}_det_drz_seg.fits"

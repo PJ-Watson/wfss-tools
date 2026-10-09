@@ -1,6 +1,6 @@
 recursive_merge
 ===============
 
-.. currentmodule:: niriss_tools.pipeline
+.. currentmodule:: wfss_tools.pipeline
 
 .. autofunction:: recursive_merge

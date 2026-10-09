@@ -19,7 +19,7 @@ try:
 except:
     POWERBIN_AVAIL = False
 
-from niriss_tools.sed import colour_binning
+from wfss_tools.sed import colour_binning
 
 __all__ = [
     "hexbin",
@@ -467,7 +467,7 @@ def save_binned_data_fits(
     """
     Create a binned photometric catalogue from a segmentation map.
 
-    Unlike `~niriss_tools.sed.save_binned_data_arr`, this uses as input
+    Unlike `~wfss_tools.sed.save_binned_data_arr`, this uses as input
     multiple FITS files containing the signal and variance arrays.
 
     Parameters
@@ -617,7 +617,7 @@ def bin_and_save(
         the chosen binning parameters.
     **bin_kwargs : dict, optional
         Any additional parameters to be passed through to
-        `~niriss_tools.sed.constrained_adaptive`.
+        `~wfss_tools.sed.constrained_adaptive`.
 
     Returns
     -------
@@ -628,7 +628,7 @@ def bin_and_save(
     if isinstance(seg_map, PathLike):
         seg_map = fits.getdata(seg_map, seg_hdu_index)
 
-    from niriss_tools.pipeline import seg_slice
+    from wfss_tools.pipeline import seg_slice
 
     obj_img_idxs = seg_slice(seg_map, obj_id, padding=padding)
 

@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0","numpy>=2", "setuptools_scm>=8.0","Cython>=3.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "niriss-tools"
+name = "wfss-tools"
 dynamic = ["version"]
 authors = [
   { name="Peter J. Watson", email="peter.watson+NT@inaf.it" },
@@ -53,8 +53,8 @@ docs = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/PJ-Watson/niriss-tools"
-"Bug Tracker" = "https://github.com/PJ-Watson/niriss-tools/issues"
+"Homepage" = "https://github.com/PJ-Watson/wfss-tools"
+"Bug Tracker" = "https://github.com/PJ-Watson/wfss-tools/issues"
 
 [tool.setuptools.package-data]
 "*" = ["*.*"]
@@ -88,4 +88,4 @@ override_SS05 = [  # override SS05 to allow docstrings starting with these words
 ]
 
 [tool.setuptools_scm]
-version_file = "src/niriss_tools/_version.py"
+version_file = "src/wfss_tools/_version.py"

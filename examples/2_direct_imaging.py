@@ -24,7 +24,7 @@ if __name__ == "__main__":
 
     except:
 
-        from niriss_tools.pipeline import find_matches, parse_images_from_pattern
+        from wfss_tools.pipeline import find_matches, parse_images_from_pattern
 
         megascience_dir = root_dir / "archival" / "grizli-v2" / "JwstMosaics" / "v7"
         bcgs_dict = parse_images_from_pattern(
@@ -73,7 +73,7 @@ if __name__ == "__main__":
 
     else:
 
-        from niriss_tools.isophotal import reproject_and_convolve
+        from wfss_tools.isophotal import reproject_and_convolve
 
         conv_dict = {}
         for filt_key, old_details in bcgs_dict.items():
