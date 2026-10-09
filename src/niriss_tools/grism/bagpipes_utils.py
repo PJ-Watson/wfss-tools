@@ -13,9 +13,8 @@ from bagpipes import config
 from bagpipes_extended.sed.specgen import BagpipesSpecGenerator, air_to_vac
 from grizli.utils_numba.interp import interp_conserve_c
 from numpy.typing import ArrayLike
-
-from niriss_tools.grism import float_dtype
-from niriss_tools.grism.samplers import TemplateSampler
+from wfss_tools.grism import float_dtype
+from wfss_tools.grism.samplers import TemplateSampler
 
 __all__ = ["BagpipesTemplateSampler", "init_bagpipes_spec_gen"]
 

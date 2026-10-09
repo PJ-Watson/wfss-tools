@@ -13,7 +13,7 @@ os.environ["CRDS_CONTEXT"] = "jwst_1413.pmap"
 
 conf_type = "NGDEEP_conf_A"
 
-from niriss_tools.grism import MultiRegionFit
+from wfss_tools.grism import MultiRegionFit
 
 # Or similar
 root_dir = Path(os.getenv("ROOT_DIR"))

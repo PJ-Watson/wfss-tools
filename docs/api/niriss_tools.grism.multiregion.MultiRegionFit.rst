@@ -1,7 +1,7 @@
 MultiRegionFit
 ==============
 
-.. currentmodule:: niriss_tools.grism.multiregion
+.. currentmodule:: wfss_tools.grism.multiregion
 
 .. autoclass:: MultiRegionFit
    :show-inheritance:
@@ -24,7 +24,9 @@ MultiRegionFit
       ~MultiRegionFit.import_config
       ~MultiRegionFit.initialise_process_pool
       ~MultiRegionFit.initialise_shared_memory
+      ~MultiRegionFit.load_best_fit_info
       ~MultiRegionFit.run_all
+      ~MultiRegionFit.write_best_fit_info
 
    .. rubric:: Attributes Documentation
 
@@ -40,4 +42,6 @@ MultiRegionFit
    .. automethod:: import_config
    .. automethod:: initialise_process_pool
    .. automethod:: initialise_shared_memory
+   .. automethod:: load_best_fit_info
    .. automethod:: run_all
+   .. automethod:: write_best_fit_info

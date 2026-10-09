@@ -1,6 +1,6 @@
 match_pypher
 ============
 
-.. currentmodule:: niriss_tools.isophotal
+.. currentmodule:: wfss_tools.isophotal
 
 .. autofunction:: match_pypher

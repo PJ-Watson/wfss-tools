@@ -19,6 +19,7 @@ from time import time
 import h5py
 import numpy as np
 import scipy.optimize
+import wfss_tools
 from astropy.io import fits
 from astropy.nddata import block_reduce
 from astropy.table import Table
@@ -31,24 +32,22 @@ from grizli.multifit import MultiBeam, drizzle_to_wavelength
 from numpy.typing import ArrayLike
 from reproject import reproject_interp
 from tqdm import tqdm
+from wfss_tools.grism.bagpipes_utils import BagpipesTemplateSampler
+from wfss_tools.grism.fitting_tools import CDNNLS, fennls, fnnls
 
-import niriss_tools
-from niriss_tools.grism.bagpipes_utils import BagpipesTemplateSampler
-from niriss_tools.grism.fitting_tools import CDNNLS, fennls, fnnls
-
-# from niriss_tools.grism.samplers import GrizliTemplateSampler
-from niriss_tools.grism.specgen import (
+# from wfss_tools.grism.samplers import GrizliTemplateSampler
+from wfss_tools.grism.specgen import (
     CLOUDY_LINE_MAP,
     check_coverage,
 )
-from niriss_tools.grism.utils import (
+from wfss_tools.grism.utils import (
     LINE_UP,
     align_direct_images,
     gen_stacked_beams,
     log_with_offset,
 )
-from niriss_tools.pipeline.reduction import recursive_merge
-from niriss_tools.sed.binning import bin_and_save
+from wfss_tools.pipeline.reduction import recursive_merge
+from wfss_tools.sed.binning import bin_and_save
 
 """
 TODO: remove logic from _gen functions. Instead create template IDs as
@@ -56,7 +55,7 @@ TODO: remove logic from _gen functions. Instead create template IDs as
 Simplify model generation and combine output table columns into "tempID".
 """
 
-from niriss_tools.grism import float_dtype
+from wfss_tools.grism import float_dtype
 
 __all__ = ["MultiRegionFit", "DEFAULT_PLINE"]
 
@@ -302,7 +301,7 @@ class MultiRegionFit:
         obj_z : float | ArrayLike | None, optional
             This can be used to override the redshift used for fitting, in
             case of a mismatch between the model atlas and the object of
-            interest. See `~niriss_tools.grism.MultiRegionFit.gen_atlas`
+            interest. See `~wfss_tools.grism.MultiRegionFit.gen_atlas`
             for more details.
         z_range : float, optional
             As above.
@@ -416,7 +415,7 @@ class MultiRegionFit:
         """
 
         default_filter_dir = (
-            Path(niriss_tools.__file__).parent / "data" / "filter_throughputs"
+            Path(wfss_tools.__file__).parent / "data" / "filter_throughputs"
         )
 
         # Create the filter directory; populate as needed
@@ -475,7 +474,7 @@ class MultiRegionFit:
         ----------
         binning_kwargs : dict
             Any arguments to pass to
-            `~niriss_tools.sed.binning.bin_and_save`.
+            `~wfss_tools.sed.binning.bin_and_save`.
         use_stacks : bool, optional
             Whether to fit to individual beams, or beams stacked by filter
             and grism. By default ``True``.
@@ -490,7 +489,7 @@ class MultiRegionFit:
             alignment. By default, ``cutout=500``.
         stack_beam_kwargs : dict, optional
             Any additional parameters to pass through to
-            `~niriss_tools.grism.utils.gen_stacked_beams`.
+            `~wfss_tools.grism.utils.gen_stacked_beams`.
         **multibeam_kwargs : dict, optional
             Any additional parameters to pass through to
             `grizli.multifit.MultiBeam`.
@@ -726,7 +725,7 @@ class MultiRegionFit:
             ``True``.
         pline : dict, optional
             Parameters for generating the drizzled emission line maps.
-            Defaults to `~niriss_tools.grism.DEFAULT_PLINE`.
+            Defaults to `~wfss_tools.grism.DEFAULT_PLINE`.
         seed : int | None, optional
             The seed for the random sampling, by default 2744. If None,
             then a new seed will be generated each time this method is

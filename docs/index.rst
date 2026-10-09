@@ -1,4 +1,4 @@
-.. niriss-tools documentation master file, created by
+.. wfss-tools documentation master file, created by
    sphinx-quickstart on Wed Sep  4 11:58:15 2024.
    You can adapt this file completely to your liking, but it should at least
    contain the root `toctree` directive.

@@ -1,6 +1,6 @@
 constrained_adaptive
 ====================
 
-.. currentmodule:: niriss_tools.sed
+.. currentmodule:: wfss_tools.sed
 
 .. autofunction:: constrained_adaptive

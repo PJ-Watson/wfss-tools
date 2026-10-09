@@ -302,7 +302,7 @@ class Bagpipes2D:
         obj_z : float | ArrayLike | None, optional
             This can be used to override the redshift used for fitting, in
             case of a mismatch between the model atlas and the object of
-            interest. See `~niriss_tools.grism.MultiRegionFit.gen_atlas`
+            interest. See `~wfss_tools.grism.MultiRegionFit.gen_atlas`
             for more details.
         z_range : float, optional
             As above.
@@ -360,7 +360,7 @@ if __name__ == "__main__":
 
     bagpipes_2d = Bagpipes2D(
         1.34,
-        config="/media/sharedData/python/py3.13_PIE/code/niriss-tools/src/niriss_tools/sed/config_v9-TEST.toml",
+        config="/media/sharedData/python/py3.13_PIE/code/wfss-tools/src/wfss_tools/sed/config_v9-TEST.toml",
         out_dir="glass_niriss_bcgs/reduction_v9-TEST_v2",
     )
 

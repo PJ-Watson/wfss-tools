@@ -7,8 +7,7 @@ import numpy as np
 from numba import njit
 from numpy.typing import ArrayLike
 from scipy import sparse
-
-from niriss_tools.grism import float_dtype
+from wfss_tools.grism import float_dtype
 
 __all__ = ["CDNNLS", "fnnls", "fennls"]
 

@@ -1,5 +1,5 @@
 Reference/API
 *************
 
-.. automodapi:: niriss_tools.pipeline
+.. automodapi:: wfss_tools.pipeline
    :inherited-members:

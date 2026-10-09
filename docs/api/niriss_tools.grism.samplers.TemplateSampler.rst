@@ -1,7 +1,7 @@
 TemplateSampler
 ===============
 
-.. currentmodule:: niriss_tools.grism.samplers
+.. currentmodule:: wfss_tools.grism.samplers
 
 .. autoclass:: TemplateSampler
    :show-inheritance:

@@ -1,4 +1,4 @@
-.. _niriss-tools-isophotal:
+.. _wfss-tools-isophotal:
 
 *******************
 Isophotal Modelling

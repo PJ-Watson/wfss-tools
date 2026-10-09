@@ -1,4 +1,4 @@
-.. _niriss-tools-sed:
+.. _wfss-tools-sed:
 
 ***********
 SED Fitting

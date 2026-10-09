@@ -11,14 +11,14 @@ Configuration file for the Sphinx documentation builder.
 
 from sphinx_astropy.conf.v2 import *
 
-project = "niriss-tools"
+project = "wfss-tools"
 copyright = "2026, Peter J. Watson"
 author = "Peter J. Watson"
 
 import sys
 from importlib.metadata import version as get_version
 
-release: str = get_version("niriss-tools")
+release: str = get_version("wfss-tools")
 # for example take major/minor
 version: str = ".".join(release.split(".")[:2])
 

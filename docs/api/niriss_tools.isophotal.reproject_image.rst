@@ -1,6 +1,6 @@
 reproject_image
 ===============
 
-.. currentmodule:: niriss_tools.isophotal
+.. currentmodule:: wfss_tools.isophotal
 
 .. autofunction:: reproject_image

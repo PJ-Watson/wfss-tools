@@ -1,6 +1,6 @@
 gen_linefinding_outputs
 =======================
 
-.. currentmodule:: niriss_tools.pipeline
+.. currentmodule:: wfss_tools.pipeline
 
 .. autofunction:: gen_linefinding_outputs

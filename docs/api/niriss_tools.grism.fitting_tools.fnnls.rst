@@ -1,6 +1,6 @@
 fnnls
 =====
 
-.. currentmodule:: niriss_tools.grism.fitting_tools
+.. currentmodule:: wfss_tools.grism.fitting_tools
 
 .. autofunction:: fnnls

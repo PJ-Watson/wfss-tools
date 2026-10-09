@@ -1,6 +1,6 @@
 load_assoc
 ==========
 
-.. currentmodule:: niriss_tools.pipeline
+.. currentmodule:: wfss_tools.pipeline
 
 .. autofunction:: load_assoc

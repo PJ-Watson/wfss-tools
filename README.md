@@ -3,13 +3,13 @@
 Clone this repository into a fresh Python 3.13 environment:
 
 ```
-git clone https://github.com/PJ-Watson/niriss-tools.git
+git clone https://github.com/PJ-Watson/wfss-tools.git
 ```
 
 Install using:
 
 ```
-python -m pip install ./niriss-tools
+python -m pip install ./wfss-tools
 ```
 
 Navigate to line 177 of `site-packages/stsci/tools/stpyfits.py`, and change the `dtype` to `int`:

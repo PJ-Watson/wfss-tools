@@ -2,6 +2,6 @@
 A subpackage to aid in running various components as part of a pipeline.
 """
 
-from niriss_tools.pipeline.misc import *
-from niriss_tools.pipeline.reduction import *
-from niriss_tools.pipeline.utils import *
+from wfss_tools.pipeline.misc import *
+from wfss_tools.pipeline.reduction import *
+from wfss_tools.pipeline.utils import *

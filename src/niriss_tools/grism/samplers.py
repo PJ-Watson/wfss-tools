@@ -9,8 +9,7 @@ from typing import Self
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
-
-from niriss_tools.grism import float_dtype
+from wfss_tools.grism import float_dtype
 
 __all__ = [
     "TemplateSampler",

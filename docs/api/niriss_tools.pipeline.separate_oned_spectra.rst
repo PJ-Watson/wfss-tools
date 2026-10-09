@@ -1,6 +1,6 @@
 separate_oned_spectra
 =====================
 
-.. currentmodule:: niriss_tools.pipeline
+.. currentmodule:: wfss_tools.pipeline
 
 .. autofunction:: separate_oned_spectra

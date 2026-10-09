@@ -1,23 +1,23 @@
 Reference/API
 *************
 
-.. automodapi:: niriss_tools.grism
+.. automodapi:: wfss_tools.grism
    :inherited-members:
 
-.. automodapi:: niriss_tools.grism.multiregion
+.. automodapi:: wfss_tools.grism.multiregion
    :inherited-members:
 
-.. automodapi:: niriss_tools.grism.samplers
+.. automodapi:: wfss_tools.grism.samplers
    :inherited-members:
 
-.. automodapi:: niriss_tools.grism.bagpipes_utils
+.. automodapi:: wfss_tools.grism.bagpipes_utils
    :inherited-members:
 
-.. automodapi:: niriss_tools.grism.specgen
+.. automodapi:: wfss_tools.grism.specgen
    :inherited-members:
 
-.. automodapi:: niriss_tools.grism.fitting_tools
+.. automodapi:: wfss_tools.grism.fitting_tools
    :inherited-members:
 
-.. automodapi:: niriss_tools.grism.utils
+.. automodapi:: wfss_tools.grism.utils
    :inherited-members:

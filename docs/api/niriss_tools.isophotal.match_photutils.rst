@@ -1,6 +1,6 @@
 match_photutils
 ===============
 
-.. currentmodule:: niriss_tools.isophotal
+.. currentmodule:: wfss_tools.isophotal
 
 .. autofunction:: match_photutils
