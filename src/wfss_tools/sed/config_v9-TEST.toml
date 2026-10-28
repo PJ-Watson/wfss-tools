@@ -1,0 +1,79 @@
+# This is an example configuration file, which stores the settings used previously.
+
+title = "MultiRegion Grism Configuration"
+
+[files]
+root_dir = "/media/sharedData/data/2025_12_06_glass-a2744" # The root dir, from which all other paths will be resolved
+out_dir = "glass_niriss_bcgs/reduction_v9-TEST" # The directory to use for all output files
+extractions_dir = "grizli_home/Extractions-NGDEEP_custom" # The directory in which NIRISS extractions are stored
+info_dict = "glass_niriss_bcgs/PSF_matched_photometry.yaml" # The file containing all the info on photometric data
+atlas_dir = "" # [optional] The directory containing the bagpipes model atlases
+
+[SED]
+bin_scheme = "colour" # The binning scheme to use
+target_sn = 10 # The target S/N for binning
+sn_filter = "jwst-nircam-f150w" # The filter to use for estimating the S/N
+bin_diameter = 3 # [optional] The minimum bin diameter, if the scheme supports it
+bin_kwargs = { } # [optional] Any additional keyword arguments
+
+[fit_params]
+z_range = 0.0025 # The range of redshift to consider for the SED fit
+sfh_type = "continuity" # [optional] The star-formation history to use
+min_age_bin = 20 # [optional] The minimum age bin to use for continuity-based SFHs
+num_age_bins = 5 # [optional] The number of age bins to use for continuity-based SFHs
+
+[atlas]
+n_samples = 5e4 # The number of samples to use when generating the model atlas
+n_cores_atlas = 16 # The number of cores to use when generating the model atlas
+n_cores_fit = 16 # The number of cores to use when performing the SED fit
+remake_atlas = false # Whether the model atlas should be remade
+overwrite_fit = false # Whether the SED fit should be overwritten
+
+[grism]
+field_name = "glass-a2744" # The name of the field
+multibeam_kwargs = { } # [optional] Any additional keyword arguments
+out_dir = "" # [optional] The name of the subdirectory to save the output files
+stack_beam_kwargs = {cluster_beams = true}
+
+n_region_samples = 5 # The number of posterior samples per region
+veldisp = 50 # The assumed velocity dispersion when generating template spectra
+oversamp_factor = 1 # The factor by which the segmentation map will be oversampled
+cpu_count = 16 # The number of cpu cores to use for the multi-region fit
+n_iters = 90 # The number of multi-region fitting iterations to perform
+nnls_iters = [1e3, 1e5] # The number of NNLS iterations to perform for each set of templates
+nnls_tol = [1e-6, 1e-10] # The NNLS tolerance, if supported
+# n_iters = 1000 # The number of multi-region fitting iterations to perform
+# nnls_iters = [1e3, 1e5] # The number of NNLS iterations to perform for each set of templates
+# nnls_tol = [1e-5, 1e-10] # The NNLS tolerance, if supported
+# n_iters = 3 # The number of multi-region fitting iterations to perform
+# nnls_iters = [1e3, 1e3] # The number of NNLS iterations to perform for each set of templates
+# nnls_tol = [1e-6, 1e-6] # The NNLS tolerance, if supported
+nnls_method = "adelie" # The NNLS method to use
+save_lines = true # Save a *lines.fits file (similar to grizli *full.fits)
+save_stacks = true # Save a *stack.fits file
+overwrite = false # Whether the output should be overwritten
+n_shifted = 5 # The number of additional regions to sample from
+cache_spec = true
+
+
+# # Grizli
+# #
+# n_region_samples = 44 # The number of posterior samples per region
+# veldisp = 50 # The assumed velocity dispersion when generating template spectra
+# oversamp_factor = 1 # The factor by which the segmentation map will be oversampled
+# cpu_count = 16 # The number of cpu cores to use for the multi-region fit
+# # n_iters = 100 # The number of multi-region fitting iterations to perform
+# # nnls_iters = [1e3, 1e5] # The number of NNLS iterations to perform for each set of templates
+# # nnls_tol = [1e-6, 1e-10] # The NNLS tolerance, if supported
+# # n_iters = 1000 # The number of multi-region fitting iterations to perform
+# # nnls_iters = [1e3, 1e5] # The number of NNLS iterations to perform for each set of templates
+# # nnls_tol = [1e-5, 1e-10] # The NNLS tolerance, if supported
+# n_iters = 1 # The number of multi-region fitting iterations to perform
+# nnls_iters = [1e3, 1e5] # The number of NNLS iterations to perform for each set of templates
+# nnls_tol = [1e-6, 1e-10] # The NNLS tolerance, if supported
+# nnls_method = "adelie" # The NNLS method to use
+# save_lines = true # Save a *lines.fits file (similar to grizli *full.fits)
+# save_stacks = true # Save a *stack.fits file
+# overwrite = false # Whether the output should be overwritten
+# n_shifted = 0 # The number of additional regions to sample from
+# cache_spec = false

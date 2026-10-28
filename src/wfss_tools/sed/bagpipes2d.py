@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 import numpy as np
+from astropy.table import Table
 from bagpipes_extended.pipeline import generate_fit_params, load_photom_bagpipes
 from bagpipes_extended.sed.atlas_fitter import AtlasFitter, temp_chdir
 from bagpipes_extended.sed.atlas_generator import AtlasGenerator
@@ -347,7 +348,7 @@ class Bagpipes2D:
                         run=self.run_name,
                         parallel=self.n_cores,
                         redshifts=self.obj_z if obj_z is None else obj_z,
-                        # redshift_range=self.z_range,
+                        redshift_range=self.z_range,
                         n_posterior=500,
                     )
             # else:
@@ -362,6 +363,7 @@ if __name__ == "__main__":
         1.34,
         config="/media/sharedData/python/py3.13_PIE/code/wfss-tools/src/wfss_tools/sed/config_v9-TEST.toml",
         out_dir="glass_niriss_bcgs/reduction_v9-TEST_v2",
+        n_cores=16,
     )
 
     phot_cat_path = Path(

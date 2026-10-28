@@ -4,12 +4,13 @@ Tools for performing NNLS optimisation.
 
 import numba
 import numpy as np
-from numba import njit
+from numba import jit, njit
 from numpy.typing import ArrayLike
 from scipy import sparse
+
 from wfss_tools.grism import float_dtype
 
-__all__ = ["CDNNLS", "fnnls", "fennls"]
+__all__ = ["CDNNLS", "fnnls", "fennls", "test_nnls"]
 
 try:
     import fnnlsEigen as fe
@@ -17,6 +18,222 @@ try:
     HAS_EIGEN = True
 except:
     HAS_EIGEN = False
+
+
+def test_nnls(A, y, max_iter=1e3, tol=1e-6, method="gram-numba"):
+
+    match method:
+        case "gram":
+            return fnnls_gram(A.T @ A, A.T @ y, max_iter=max_iter, tol=tol)
+        case "gram-numba":
+            # 1. Pre-compute Gram Matrix and projection vector using multi-threaded BLAS (dgemm)
+            # stacked_Ax shape: (M, N), y shape: (M,)
+            G = A.T @ A
+            d = A.T @ y
+
+            # 2. Add slight Tikhonov regularization for numerical stability against co-linear templates
+            G.flat[:: A.shape[1] + 1] += 1e-8
+            return fnnls_gram_numba(G, d, max_iter=max_iter, tol=tol)
+
+
+@jit(nopython=True, fastmath=True, cache=True)
+def fnnls_gram_numba(
+    G: np.ndarray, d: np.ndarray, max_iter: int = 500, tol: float = 1e-6
+) -> np.ndarray:
+    """
+    Zero-allocation, JIT-compiled Fast NNLS operating on Gram Matrix G = A^T @ A.
+
+    Parameters
+    ----------
+    G : ndarray (N, N)
+        Gram matrix (A^T @ A).
+    d : ndarray (N,)
+        Match vector (A^T @ y).
+    max_iter : int
+        Maximum number of pivoting iterations.
+    tol : float
+        Optimality tolerance for Karush-Kuhn-Tucker (KKT) conditions.
+
+    Returns
+    -------
+    c : ndarray (N,)
+        Non-negative coefficient vector.
+    """
+    N = G.shape[0]
+    c = np.zeros(N, dtype=G.dtype)
+    w = d.copy()  # Gradient vector w = d - G @ c
+
+    # Passive set mask (True if coefficient is in passive set c > 0)
+    P_mask = np.zeros(N, dtype=np.bool_)
+
+    # Pre-allocate fixed working buffers to avoid heap allocation in inner loops
+    G_sub = np.zeros((N, N), dtype=G.dtype)
+    d_sub = np.zeros(N, dtype=G.dtype)
+    p_indices = np.zeros(N, dtype=np.int64)
+
+    # KKT Pre-check: if no positive gradients exist, optimal solution is 0
+    max_w_init = -1e30
+    for i in range(N):
+        if w[i] > max_w_init:
+            max_w_init = w[i]
+    if max_w_init <= tol:
+        return c
+
+    iter_count = 0
+
+    while iter_count < max_iter:
+        # 1. Find index t in active set (P_mask == False) with maximum positive gradient
+        max_w = tol
+        t = -1
+        for i in range(N):
+            if not P_mask[i] and w[i] > max_w:
+                max_w = w[i]
+                t = i
+
+        # If no positive gradient remains, first-order KKT optimality is reached
+        if t == -1:
+            break
+
+        P_mask[t] = True
+
+        # 2. Inner loop: solve unconstrained sub-system on passive set
+        while iter_count < max_iter:
+            iter_count += 1
+
+            # Gather active passive-set indices into index buffer
+            k = 0
+            for i in range(N):
+                if P_mask[i]:
+                    p_indices[k] = i
+                    k += 1
+
+            if k == 0:
+                break
+
+            # Populate pre-allocated contiguous submatrix G_sub[:k, :k] and d_sub[:k]
+            for r in range(k):
+                idx_r = p_indices[r]
+                d_sub[r] = d[idx_r]
+                for col in range(k):
+                    idx_c = p_indices[col]
+                    G_sub[r, col] = G[idx_r, idx_c]
+
+            # Direct LAPACK solve on sliced contiguous view
+            try:
+                z = np.linalg.solve(G_sub[:k, :k], d_sub[:k])
+            except:
+                # Add small Tikhonov diagonal boost if submatrix is rank-deficient
+                for r in range(k):
+                    G_sub[r, r] += 1e-8
+                z = np.linalg.solve(G_sub[:k, :k], d_sub[:k])
+
+            # Check if all passive variables are strictly positive
+            all_pos = True
+            for r in range(k):
+                if z[r] <= 0.0:
+                    all_pos = False
+                    break
+
+            if all_pos:
+                for r in range(k):
+                    c[p_indices[r]] = z[r]
+                for i in range(N):
+                    if not P_mask[i]:
+                        c[i] = 0.0
+                break
+
+            # 3. Handle negative components via alpha interpolation
+            alpha = 1.0
+            for r in range(k):
+                idx = p_indices[r]
+                if z[r] <= 0.0:
+                    diff = c[idx] - z[r]
+                    if diff > 1e-12:
+                        val = c[idx] / diff
+                        if val < alpha:
+                            alpha = val
+
+            # Interpolate towards unconstrained solution
+            for r in range(k):
+                idx = p_indices[r]
+                c[idx] += alpha * (z[r] - c[idx])
+
+            # Move zeroed-out variables back to active set
+            for r in range(k):
+                idx = p_indices[r]
+                if c[idx] <= 1e-12:
+                    c[idx] = 0.0
+                    P_mask[idx] = False
+
+        # 4. Update gradient vector w = d - G @ c
+        for i in range(N):
+            val = 0.0
+            for j in range(N):
+                val += G[i, j] * c[j]
+            w[i] = d[i] - val
+
+    return c
+
+
+def fnnls_gram(
+    G: np.ndarray, d: np.ndarray, max_iter: int = 500, tol: float = 1e-6
+) -> np.ndarray:
+    """
+    Fast NNLS on Gram matrix G = A^T @ A and d = A^T @ y.
+    Decouples solver speed from pixel dimension M.
+    """
+    N = G.shape[0]
+    c = np.zeros(N, dtype=G.dtype)
+
+    # Passive set (True where c > 0) & Active set (True where c == 0)
+    P = np.zeros(N, dtype=bool)
+
+    # Gradient w = A^T (y - A c) = d - G @ c
+    w = d.copy()
+
+    # KKT pre-filtering: if all non-positive gradients, solution is 0
+    if np.all(w <= tol):
+        return c
+
+    iter_count = 0
+    while not np.all(P) and np.max(w[~P]) > tol and iter_count < max_iter:
+        # Find index with maximum positive gradient in active set
+        w_active = w.copy()
+        w_active[P] = -np.inf
+        t = np.argmax(w_active)
+
+        P[t] = True
+
+        # Solve inner unconstrained system on passive set: G_P c_P = d_P
+        while iter_count < max_iter:
+            iter_count += 1
+            G_P = G[np.ix_(P, P)]
+            d_P = d[P]
+
+            try:
+                c_P = np.linalg.solve(G_P, d_P)
+            except np.linalg.LinAlgError:
+                # Regularize slightly if singular
+                c_P = np.linalg.solve(G_P + 1e-8 * np.eye(G_P.shape[0]), d_P)
+
+            # If all passive variables positive, update c and recompute gradient
+            if np.all(c_P > 0):
+                c[P] = c_P
+                c[~P] = 0.0
+                break
+
+            # Handle negative passive variables via interpolation
+            c_curr = c[P]
+            alpha = np.min(c_curr[c_P <= 0] / (c_curr[c_P <= 0] - c_P[c_P <= 0]))
+            c[P] += alpha * (c_P - c_curr)
+
+            # Move zeroed variables back to active set
+            P[c <= 1e-12] = False
+            c[~P] = 0.0
+
+        w = d - G @ c
+
+    return c
 
 
 def fennls(

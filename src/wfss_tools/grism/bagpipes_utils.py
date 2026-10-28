@@ -13,6 +13,7 @@ from bagpipes import config
 from bagpipes_extended.sed.specgen import BagpipesSpecGenerator, air_to_vac
 from grizli.utils_numba.interp import interp_conserve_c
 from numpy.typing import ArrayLike
+
 from wfss_tools.grism import float_dtype
 from wfss_tools.grism.samplers import TemplateSampler
 
@@ -85,12 +86,14 @@ class BagpipesTemplateSampler(TemplateSampler):
 
     def __init__(
         self,
-        posterior_dir: Path,
+        posterior_ids: ArrayLike,
+        fit_instructions: dict | None = None,
+        posterior_dir: Path | None = None,
         seed: int = 2744,
         cpu_count: int = multiprocessing.cpu_count(),
         cache_all_spectra: bool = True,
         veldisp: float = 50,
-        spec_wavs: np.ndarray[float] = np.arange(10000.0, 23000.0, 22.5),
+        spec_wavs: np.ndarray[float] | None = None,
         apply_R_curve: bool = False,
     ):
 
@@ -98,31 +101,45 @@ class BagpipesTemplateSampler(TemplateSampler):
 
         self.base_rng = np.random.Generator(np.random.PCG64(self.seed))
 
-        self.posterior_ids = [f.stem for f in posterior_dir.glob("*.h5")]
-        try:
-            self.posterior_ids.sort(key=int)
-        except:
-            self.posterior_ids.sort()
+        self.posterior_ids = posterior_ids
+
+        # self.posterior_ids = [f.stem for f in posterior_dir.glob("*.h5")]
+        # try:
+        #     self.posterior_ids.sort(key=int)
+        # except:
+        #     self.posterior_ids.sort()
 
         self.cpu_count = cpu_count
 
         self.cache_all_spectra = cache_all_spectra
 
-        self.fit_instructions = self.load_fit_instructions(
-            posterior_dir / f"{self.posterior_ids[0]}.h5"
-        )
+        if spec_wavs is None:
+            spec_wavs = np.arange(10000.0, 23000.0, 22.5)
+        self.spec_wavs = spec_wavs
+
+        if fit_instructions is not None:
+            self.fit_instructions = fit_instructions
+        elif posterior_dir is not None:
+            self.fit_instructions = self.load_fit_instructions(
+                posterior_dir / f"{self.posterior_ids[0]}.h5"
+            )
+        else:
+            raise ValueError(
+                "One of `fit_instructions` or `posterior_dir` must be supplied in "
+                "order to initialise an instance of this class."
+            )
+
         if apply_R_curve:
             self.add_niriss_R_curve(self.fit_instructions)
 
         self.veldisp = veldisp
-        self.spec_wavs = spec_wavs
 
         self.dummy_spec_gen = BagpipesSpecGenerator(
             self.fit_instructions, self.veldisp, self.spec_wavs
         )
-        self.dummy_spec_gen.sample(
-            self.load_model_params(posterior_dir / f"{self.posterior_ids[0]}.h5")[0]
-        )
+        # self.dummy_spec_gen.sample(
+        #     self.load_model_params(posterior_dir / f"{self.posterior_ids[0]}.h5")[0]
+        # )
 
         self.model_comp = self.dummy_spec_gen.model_components
 
@@ -172,6 +189,7 @@ class BagpipesTemplateSampler(TemplateSampler):
         model_seeds: np.ndarray[int],
         extra_region_idxs: np.ndarray[int] | None = None,
         n_extra_samples: int = 0,
+        return_params: bool = False,
         shared_memory_manger: SharedMemoryManager | None = None,
         shared_memory_name: str | None = None,
         shared_memory_shape: tuple[int] | None = None,
@@ -198,6 +216,8 @@ class BagpipesTemplateSampler(TemplateSampler):
             this number of additional models will be generated. This is
             implemented by indexing the array of ``model_seeds``, and is
             by default ``0``.
+        return_params : bool, optional
+            If ``True``, return only the model parameters.
         shared_memory_manger : SharedMemoryManager | None, optional
             An instance of a SharedMemoryManager, by default ``None``. If
             not ``None``, ``self.model_spectra`` will be copied into
@@ -252,6 +272,9 @@ class BagpipesTemplateSampler(TemplateSampler):
             ].reshape((len(self.posterior_ids), -1))
 
             all_models = np.concatenate((all_models, extra_models), axis=-1)
+
+        if return_params:
+            return self.all_model_params[all_models]
 
         all_models_shape = all_models.shape
 
@@ -404,7 +427,11 @@ class BagpipesTemplateSampler(TemplateSampler):
         )
         unique_line_fluxes = self.model_line_fluxes[unique_idxs]
 
-        model_wavs_rf = self.dummy_spec_gen.model_gal.wavelengths
+        try:
+            model_wavs_rf = self.dummy_spec_gen.model_gal.wavelengths
+        except:
+            self.dummy_spec_gen.sample_spec(ast.literal_eval(unique_params[0]))
+            model_wavs_rf = self.dummy_spec_gen.model_gal.wavelengths
 
         if "redshift" in self.param_names:
             z_idx = (np.array(self.param_names) == "redshift").argmax()
@@ -687,7 +714,9 @@ if __name__ == "__main__":
     )
 
     template_sampler = BagpipesTemplateSampler(
-        posterior_dir=posterior_dir, cache_all_spectra=False
+        posterior_ids=np.arange(1, 186).astype(int),
+        posterior_dir=posterior_dir,
+        cache_all_spectra=False,
     )
 
     model_seeds, extra_region_idxs = template_sampler.gen_model_seeds_from_iter(0, 5, 5)
@@ -696,6 +725,7 @@ if __name__ == "__main__":
     )
     print(template_sampler.model_spectra.shape)
     print(template_sampler.model_params.shape)
+    print(template_sampler.all_model_params.shape)
     template_sampler.gen_emline_spectra(
         emline=["H  1  6562.80A", "N  2  6583.45A", "N  2  6548.05A"]
         # emline=["H  1  6562.80A"]

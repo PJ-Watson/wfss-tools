@@ -19,7 +19,6 @@ from time import time
 import h5py
 import numpy as np
 import scipy.optimize
-import wfss_tools
 from astropy.io import fits
 from astropy.nddata import block_reduce
 from astropy.table import Table
@@ -32,8 +31,10 @@ from grizli.multifit import MultiBeam, drizzle_to_wavelength
 from numpy.typing import ArrayLike
 from reproject import reproject_interp
 from tqdm import tqdm
+
+import wfss_tools
 from wfss_tools.grism.bagpipes_utils import BagpipesTemplateSampler
-from wfss_tools.grism.fitting_tools import CDNNLS, fennls, fnnls
+from wfss_tools.grism.fitting_tools import CDNNLS, fennls, fnnls, test_nnls
 
 # from wfss_tools.grism.samplers import GrizliTemplateSampler
 from wfss_tools.grism.specgen import (
@@ -828,6 +829,7 @@ class MultiRegionFit:
             A = self.MB.A_poly * 1
 
         self.template_sampler = BagpipesTemplateSampler(
+            posterior_ids=self.regions_seg_ids,
             posterior_dir=(self.pipes_dir / "posterior" / self.run_name),
             seed=seed,
             cpu_count=cpu_count,
@@ -1057,6 +1059,9 @@ class MultiRegionFit:
 
                 # Remove any negative or zero templates
                 summed_temps = np.sum(self.stacked_A, axis=1)
+
+                # print (summed_temps.shape, y.shape)
+                # exit()
                 ok_temp = summed_temps > 0
 
                 # TODO: finding which of the forward modelled templates are unique is
@@ -1065,17 +1070,25 @@ class MultiRegionFit:
                 # print (np.isnan(self.stacked_A).sum())
                 # _, unique_idxs = np.unique(self.stacked_A, axis=0, return_index=True)
                 _, unique_idxs = np.unique(summed_temps, return_index=True)
-                unique_temp_mask = np.isin(
-                    np.arange(self.stacked_A.shape[0]), unique_idxs
-                )
+                unique_temp_mask = np.zeros(self.stacked_A.shape[0], dtype=bool)
+                unique_temp_mask[unique_idxs] = True
                 ok_temp &= unique_temp_mask
 
                 out_coeffs = np.zeros(self.stacked_A.shape[0])
 
+                # self.stacked_A /= temp_norm[:,None]
+
+                # print (self.stacked_A)
+
                 # Transpose the template array
                 stacked_Ax = self.stacked_A[ok_temp].T
+                # Multiply in place
+                np.multiply(stacked_Ax, sivarf_masked[:, np.newaxis], out=stacked_Ax)
 
-                stacked_Ax *= sivarf_masked[:, np.newaxis]
+                # temp_norm = np.ones(stacked_Ax.shape[1])
+                # temp_norm = y.sum() / np.sum(stacked_Ax, axis=0)
+
+                # stacked_Ax *= temp_norm[None,:]
 
                 # Change the max iters and tolerance for the final iteration
                 if TWO_STAGE and (iteration == iterations[-1]):
@@ -1105,15 +1118,24 @@ class MultiRegionFit:
                     state.solve()
                     state_iters = deepcopy(state.iters)
                     coeffs = deepcopy(state.beta)
-                    coeffs[: self.MB.N] -= pedestal
+
                     del state, stacked_Ax_ad
+
+                elif nnls_method == "test":
+
+                    coeffs = test_nnls(
+                        stacked_Ax,
+                        y,
+                        tol=_nnls_t,
+                        max_iter=_nnls_i,
+                    )
 
                 elif nnls_method == "numba":
 
                     nnls_solver = CDNNLS(stacked_Ax, y)
                     nnls_solver.run(n_iter=_nnls_i, epsilon=_nnls_t)
                     coeffs = nnls_solver.w
-                    coeffs[: self.MB.N] -= pedestal
+                    # coeffs[: self.MB.N] -= pedestal
 
                 elif nnls_method == "fnnls":
                     coeffs = fnnls(
@@ -1122,7 +1144,7 @@ class MultiRegionFit:
                         tolerance=_nnls_t,
                         max_iterations=_nnls_i,
                     )
-                    coeffs[: self.MB.N] -= pedestal
+                    # coeffs[: self.MB.N] -= pedestal
 
                 elif nnls_method == "fennls":
                     coeffs = fennls(
@@ -1131,13 +1153,17 @@ class MultiRegionFit:
                         tolerance=_nnls_t,
                         max_iterations=_nnls_i,
                     )
-                    coeffs[: self.MB.N] -= pedestal
+                    # coeffs[: self.MB.N] -= pedestal
                 else:
 
                     coeffs, rnorm, info = scipy.optimize._nnls._nnls(
                         stacked_Ax, y, _nnls_i
                     )
-                    coeffs[: self.MB.N] -= pedestal
+                    # coeffs[: self.MB.N] -= pedestal
+
+                # coeffs *= temp_norm
+                # self.stacked_A *= temp_norm[:,None]
+                coeffs[: self.MB.N] -= pedestal
 
                 t2 = time()
                 log_with_offset(
@@ -1205,6 +1231,86 @@ class MultiRegionFit:
         self.best_id_shifts = np.array(
             [int(s) for s in output_table["id_shifts"][best_iter]]
         )
+
+        # def write_best_fit_info(self):
+
+        #     best_model_params = self.template_sampler.gen_all_spectra_from_seeds(
+        #         model_seeds=self.best_model_seeds,
+        #         extra_region_idxs=self.best_id_shifts,
+        #         n_extra_samples=self.n_shifted_samples,
+        #         return_params=True,
+        #     )
+        #     with h5py.File("testfile.hdf5", "w") as f:
+
+        #         grp_model = f.create_group("model")
+        #         grp_model.attrs["model_type"] = "bagpipes"
+
+        #         import ast
+
+        #         best_model_params = np.array(
+        #             [ast.literal_eval(s) for s in best_model_params.ravel()]
+        #         ).reshape((*best_model_params.shape, -1))
+        #         dset_model_params = grp_model.create_dataset(
+        #             "model_params", data=best_model_params
+        #         )
+
+        #         # This is necessary for converting large arrays to strings
+        #         np.set_printoptions(threshold=10**7)
+        #         dset_model_params.attrs["fit_instructions"] = str(
+        #             self.template_sampler.fit_instructions
+        #         )
+        #         np.set_printoptions(threshold=10**4)
+
+        #         dset_model_params.attrs["model_seeds"] = [self.best_model_seeds]
+        #         dset_model_params.attrs["id_shifts"] = [self.best_id_shifts]
+        #         dset_model_params.attrs["n_extra_samples"] = [self.n_shifted_samples]
+
+        #         dset_fit_coeffs = grp_model.create_dataset("fit_coeffs", data=out_coeffs)
+        #         dset_fit_coeffs.attrs["temp_offset"] = self.temp_offset
+
+        # def load_best_fit_info(self):
+
+        #     with h5py.File("testfile.hdf5", "r") as f:
+
+        #         grp_model = f.create_group("model")
+
+        #         if grp_model.attrs["model_type"] == "bagpipes":
+
+        #             fit_info_str = test_post.attrs["fit_instructions"]
+        #             fit_info_str = fit_info_str.replace("array", "np.array")
+        #             fit_info_str = fit_info_str.replace("float", "np.float")
+        #             fit_info_str = fit_info_str.replace("np.np.", "np.")
+        #             fit_instructions = eval(fit_info_str)
+
+        #             np.array([str(r.tolist()) for r in params_array])
+        #         # import ast
+
+        #         best_model_params = np.array(
+        #             [ast.literal_eval(s) for s in best_model_params.ravel()]
+        #         ).reshape((*best_model_params.shape, -1))
+        #         dset_model_params = grp_model.create_dataset(
+        #             "model_params", data=best_model_params
+        #         )
+
+        #         # This is necessary for converting large arrays to strings
+        #         np.set_printoptions(threshold=10**7)
+        #         dset_model_params.attrs["fit_instructions"] = str(
+        #             self.template_sampler.fit_instructions
+        #         )
+        #         np.set_printoptions(threshold=10**4)
+
+        #         dset_model_params.attrs["model_seeds"] = [self.best_model_seeds]
+        #         dset_model_params.attrs["id_shifts"] = [self.best_id_shifts]
+        #         dset_model_params.attrs["n_extra_samples"] = [self.n_shifted_samples]
+
+        #         dset_fit_coeffs = grp_model.create_dataset("fit_coeffs", data=out_coeffs)
+        #         dset_fit_coeffs.attrs["temp_offset"] = self.temp_offset
+
+        # with h5py.File("testfile.hdf5", "r") as f:
+
+        # print (best_model_params.shape)
+        # print (best_model_params)
+        # exit()
 
         # Refill array with best model
         print("Calculating covariance array...")
@@ -1365,11 +1471,13 @@ class MultiRegionFit:
 
         # def gen_line_maps(
         #     self,
+        #     lines = CLOUDY_LINE_MAP,
         # ):
 
         if save_lines:
             line_hdu = None
             saved_lines = []
+            self.stacked_A[self.temp_offset :].fill(0.0)
 
             # shm_model_spectra_name, model_spectra_arr.shape = (
             self.template_sampler.gen_all_spectra_from_seeds(
@@ -1440,7 +1548,7 @@ class MultiRegionFit:
                     )
                 )
 
-                masked_contf = masked_modelf - masked_nebularf
+                masked_contf = masked_modelf.copy() - masked_nebularf
 
                 # Reset the forward model array
                 self.stacked_A[self.temp_offset :].fill(0.0)
@@ -1617,18 +1725,90 @@ class MultiRegionFit:
     def __exit__(self, exc_type, exc_value, traceback):
         self.__del__()
 
+    def precompute_sparse_trace_structures(self):
+        """
+        Instantaneous pre-computation (< 0.1s total).
+        Pre-computes 1D resampling matrices R and pre-extracts active region pixels.
+        """
+        W = len(self.spec_wavs)
+        self.worker_resample_R = []
+        self.worker_sparse_pixels = {}
+
+        # 1. Pre-compute 1D Resampling Matrix R per beam
+        from grizli.utils_numba.interp import interp_conserve_c
+
+        for beam in self.MB.beams:
+            lam_beam = beam.beam.lam_beam
+            L = len(lam_beam)
+            R = np.zeros((L, W), dtype=float_dtype)
+            so = np.argsort(lam_beam)
+
+            for w in range(W):
+                unit_spec = np.zeros(W, dtype=float_dtype)
+                unit_spec[w] = 1.0
+                res = np.zeros(L, dtype=float_dtype)
+                # res[so] = interp_conserve_c(lam_beam[so], self.spec_wavs, unit_spec, integrate=1, left=0, right=0)
+                # 1. Pre-compute 1D Resampling Matrix R per beam (use integrate=0 for flux density)
+                res[so] = interp_conserve_c(
+                    lam_beam[so],
+                    self.spec_wavs,
+                    unit_spec,
+                    integrate=0,
+                    left=0,
+                    right=0,
+                )
+                R[:, w] = res.astype(float_dtype)
+
+            self.worker_resample_R.append(R)
+
+        # 2. Pre-extract active non-zero pixels per region & beam
+        for seg_idx, seg_id in enumerate(self.regions_seg_ids):
+            for beam_idx, beam in enumerate(self.MB.beams):
+                thumb = beam.beam.direct
+                seg_map = beam.regions_seg_map
+                shd = beam.beam.sh
+                x0 = beam.beam.x0
+
+                # Match valid bounds
+                j_indices, i_indices = np.where((seg_map == seg_id) & (thumb != 0.0))
+
+                if len(j_indices) == 0:
+                    self.worker_sparse_pixels[(seg_idx, beam_idx)] = (
+                        np.array([], dtype=float_dtype),
+                        np.array([], dtype=np.int64),
+                        np.array([], dtype=np.int64),
+                    )
+                    continue
+
+                fluxes = thumb[j_indices, i_indices].astype(float_dtype)
+
+                # FIX 1B: Normalize direct image profile to conserve flux
+                total_flux = np.sum(fluxes)
+                if total_flux > 0:
+                    fluxes /= total_flux
+
+                y_offs = (j_indices - x0[0]).astype(np.int64)
+                x_offs = (i_indices - x0[1]).astype(np.int64)
+
+                self.worker_sparse_pixels[(seg_idx, beam_idx)] = (
+                    fluxes,
+                    y_offs,
+                    x_offs,
+                )
+
     def initialise_process_pool(self, cpu_count: int):
         """
-        Initialise a pool of processes.
-
-        This is stored as a class attribute, to reduce the overhead of
-        creating this each time it is needed.
-
-        Parameters
-        ----------
-        cpu_count : int
-            The number of processes to create.
+        Initialise worker pool passing ultra-lightweight static trace metadata.
         """
+        self.precompute_sparse_trace_structures()
+
+        # Compute column bounds for stacked_A
+        beam_offsets = []
+        col_idx = 0
+        for beam in self.MB.beams:
+            n_fit = int(np.sum(beam.fit_mask))
+            beam_offsets.append((col_idx, col_idx + n_fit))
+            col_idx += n_fit
 
         self._process_pool = multiprocessing.Pool(
             processes=cpu_count,
@@ -1638,9 +1818,102 @@ class MultiRegionFit:
                 self.model_spectra_arr.shape,
                 self.shm_stacked_A.name,
                 self.stacked_A.shape,
+                self.worker_resample_R,
+                self.worker_sparse_pixels,
+                beam_offsets,
                 self.MB,
             ),
         )
+
+    # def precompute_dispersion_matrices(self, tol: float = 1e-12) -> dict:
+    #     """
+    #     Pre-compute active-pixel sliced linear dispersion matrix operators
+    #     for all (seg_idx, beam_idx) pairs.
+    #     """
+    #     dispersion_matrices = {}
+    #     W = len(self.spec_wavs)
+
+    #     log_with_offset("Pre-computing matrix dispersion operators (Option A)...")
+
+    #     for seg_idx, seg_id in enumerate(self.regions_seg_ids):
+    #         for beam_idx, beam in enumerate(self.MB.beams):
+    #             # Masked direct thumbnail for this region and beam
+    #             masked_thumb = beam.beam.direct * (beam.regions_seg_map == seg_id)
+    #             fit_mask = beam.fit_mask
+    #             P_mask = int(np.sum(fit_mask))
+
+    #             if P_mask == 0 or np.sum(masked_thumb) == 0:
+    #                 dispersion_matrices[(seg_idx, beam_idx)] = (
+    #                     np.zeros((0, W), dtype=float_dtype),
+    #                     np.array([], dtype=int),
+    #                 )
+    #                 continue
+
+    #             D_full = np.zeros((P_mask, W), dtype=float_dtype)
+
+    #             # Measure response for each wavelength channel impulse
+    #             for w in range(W):
+    #                 delta_spec = np.zeros((2, W), dtype=float_dtype)
+    #                 delta_spec[0, :] = self.spec_wavs
+    #                 delta_spec[1, w] = 1.0
+
+    #                 disp_model = beam.beam.compute_model(
+    #                     spectrum_1d=delta_spec,
+    #                     thumb=masked_thumb,
+    #                     in_place=False,
+    #                     is_cgs=True,
+    #                 )[fit_mask]
+
+    #                 D_full[:, w] = disp_model.astype(float_dtype)
+
+    #             # Active-Pixel Slicing: isolate rows receiving non-zero dispersed light
+    #             active_mask = np.sum(np.abs(D_full), axis=1) > tol
+    #             active_indices = np.where(active_mask)[0]
+
+    #             if len(active_indices) == 0:
+    #                 D_sliced = np.zeros((0, W), dtype=float_dtype)
+    #             else:
+    #                 D_sliced = D_full[active_indices, :]
+
+    #             dispersion_matrices[(seg_idx, beam_idx)] = (D_sliced, active_indices)
+
+    #     return dispersion_matrices
+
+    # def initialise_process_pool(self, cpu_count: int):
+    #     """
+    #     Initialise a pool of processes.
+
+    #     This is stored as a class attribute, to reduce the overhead of
+    #     creating this each time it is needed.
+
+    #     Parameters
+    #     ----------
+    #     cpu_count : int
+    #         The number of processes to create.
+    #     """
+    #     # Precompute column slice bounds for each beam in stacked_A
+    #     beam_offsets = []
+    #     col_idx = 0
+    #     for beam in self.MB.beams:
+    #         n_fit = int(np.sum(beam.fit_mask))
+    #         beam_offsets.append((col_idx, col_idx + n_fit))
+    #         col_idx += n_fit
+
+    #     # Compute dispersion operators for Option (A)
+    #     dispersion_matrices = self.precompute_dispersion_matrices()
+
+    #     self._process_pool = multiprocessing.Pool(
+    #         processes=cpu_count,
+    #         initializer=init_forward_model,
+    #         initargs=(
+    #             self.shm_model_spectra.name,
+    #             self.model_spectra_arr.shape,
+    #             self.shm_stacked_A.name,
+    #             self.stacked_A.shape,
+    #             dispersion_matrices,
+    #             beam_offsets,
+    #         ),
+    #     )
 
     @property
     def process_pool(self) -> multiprocessing.Pool():
@@ -1742,14 +2015,259 @@ class MultiRegionFit:
         self.stacked_A.fill(0.0)
 
 
+# def init_forward_model(
+#     shared_model_spectra_name: str,
+#     shared_model_spectra_shape: tuple[int, ...],
+#     shared_temp_arr_name: str,
+#     shared_temp_arr_shape: tuple[int, ...],
+#     shared_direct_masked_name: str,
+#     shared_direct_masked_offsets: dict,
+#     spec_wavs: np.ndarray,
+#     beams: MultiBeam | None = None,
+# ):
+#     """
+#     Initialize worker globals once per process to eliminate inner-loop allocations.
+#     """
+#     global shm_model_spectra, shared_model_spectra
+#     shm_model_spectra = shared_memory.SharedMemory(
+#         name=shared_model_spectra_name, create=False
+#     )
+#     shared_model_spectra = np.ndarray(
+#         shared_model_spectra_shape, dtype=float_dtype, buffer=shm_model_spectra.buf
+#     )
+
+#     global shm_temp_arr, shared_temp_arr
+#     shm_temp_arr = shared_memory.SharedMemory(name=shared_temp_arr_name, create=False)
+#     shared_temp_arr = np.ndarray(
+#         shared_temp_arr_shape, dtype=float_dtype, buffer=shm_temp_arr.buf
+#     )
+
+# # Attach to shared memory for direct image thumbnails and KEEP IT ALIVE
+#     global shm_direct_masked, shared_direct_masked_flat
+#     shm_direct_masked = shared_memory.SharedMemory(
+#         name=shared_direct_masked_name, create=False
+#     )
+#     shared_direct_masked_flat = np.ndarray(
+#         (shm_direct_masked.size // np.dtype(float_dtype).itemsize,),
+#         dtype=float_dtype,
+#         buffer=shm_direct_masked.buf,
+#     )
+
+#     if beams is not None:
+#         global multibeam_object
+#         multibeam_object = deepcopy(beams)
+
+#         # OPTIMISATION 1: Pre-create 2D view headers once per worker process.
+#         # This replaces dict lookups and .reshape() calls inside the loop.
+#         global WORKER_DIRECT_VIEWS
+#         WORKER_DIRECT_VIEWS = []
+#         n_regions = shared_model_spectra_shape[0]
+
+#         for seg_idx in range(n_regions):
+#             beam_views = []
+#             for beam_idx in range(len(multibeam_object.beams)):
+#                 start, stop, shape = shared_direct_masked_offsets[(seg_idx, beam_idx)]
+#                 view_2d = shared_direct_masked_flat[start:stop].reshape(shape)
+#                 beam_views.append(view_2d)
+#             WORKER_DIRECT_VIEWS.append(beam_views)
+
+#         # OPTIMISATION 2: Pre-compute column slice bounds for each beam's active fit_mask
+#         # to avoid np.hstack allocation inside the loop.
+#         global BEAM_FIT_OFFSETS
+#         BEAM_FIT_OFFSETS = []
+#         col_idx = 0
+#         for beam in multibeam_object.beams:
+#             n_fit = int(np.sum(beam.fit_mask))
+#             BEAM_FIT_OFFSETS.append((col_idx, col_idx + n_fit))
+#             col_idx += n_fit
+
+#     # OPTIMISATION 3: Pre-allocate 2D wavelength/flux buffer once per worker
+#     global WORKER_TEMP_RESAMP
+#     WORKER_TEMP_RESAMP = np.zeros((2, len(spec_wavs)), dtype=float_dtype)
+#     WORKER_TEMP_RESAMP[0, :] = spec_wavs
+
+# def init_forward_model(
+#     shared_model_spectra_name: str,
+#     shared_model_spectra_shape: tuple[int, ...],
+#     shared_temp_arr_name: str,
+#     shared_temp_arr_shape: tuple[int, ...],
+#     dispersion_matrices_dict: dict,
+#     beam_offsets: list[tuple[int, int]],
+# ):
+#     """
+#     Initialize worker globals once per process for matrix-based dispersion.
+#     """
+#     global shm_model_spectra, shared_model_spectra
+#     shm_model_spectra = shared_memory.SharedMemory(
+#         name=shared_model_spectra_name, create=False
+#     )
+#     shared_model_spectra = np.ndarray(
+#         shared_model_spectra_shape, dtype=float_dtype, buffer=shm_model_spectra.buf
+#     )
+
+#     global shm_temp_arr, shared_temp_arr
+#     shm_temp_arr = shared_memory.SharedMemory(name=shared_temp_arr_name, create=False)
+#     shared_temp_arr = np.ndarray(
+#         shared_temp_arr_shape, dtype=float_dtype, buffer=shm_temp_arr.buf
+#     )
+
+#     global WORKER_DISPERSION_MATRICES, WORKER_BEAM_OFFSETS
+#     WORKER_DISPERSION_MATRICES = dispersion_matrices_dict
+#     WORKER_BEAM_OFFSETS = beam_offsets
+
+
+# def worker_forward_model(
+#     seg_idx: int,
+#     seg_id: int,
+#     spec_wavs: np.ndarray[float],
+#     temp_offset: int = 0,
+#     memmap: bool = False,
+# ):
+#     """
+#     Forward model with zero per-sample array allocations.
+#     """
+
+#     try:
+#         # Instant O(1) list access to pre-cached 2D view headers
+#         direct_masked = WORKER_DIRECT_VIEWS[seg_idx]
+
+#         # print (np.nansum(direct_masked[0]), flush=True)
+#         # print (len(direct_masked), flush=True)
+#         row_offset = (shared_model_spectra[seg_idx].shape[0] * seg_idx) + temp_offset
+
+#         # print (seg_idx, seg_id, flush=True)
+
+#         for sample_i, temp_spec in enumerate(shared_model_spectra[seg_idx]):
+
+#             # print (sample_i, temp_spec)
+#             # Update row 1 in-place without re-allocating array
+#             WORKER_TEMP_RESAMP[1, :] = temp_spec
+#             row_idx = row_offset + sample_i
+
+#             # Compute each beam model and write directly into destination slices (no np.hstack)
+#             for beam, direct, (col_start, col_end) in zip(
+#                 multibeam_object.beams, direct_masked, BEAM_FIT_OFFSETS
+#             ):
+#                 model_sub = beam.compute_model(
+#                     spectrum_1d=WORKER_TEMP_RESAMP,
+#                     thumb=direct,
+#                     in_place=False,
+#                     is_cgs=True,
+#                 )[beam.fit_mask]
+
+#                 shared_temp_arr[row_idx, col_start:col_end] = model_sub
+
+#                 # print ("Added to shared_temp_arr", flush=True)
+
+#         if memmap:
+#             shared_temp_arr.flush()
+
+#     except Exception as e:
+#         print(f"\n[ERROR in worker seg_idx={seg_idx}, seg_id={seg_id}]: {e}", file=sys.stderr)
+#         traceback.print_exc(file=sys.stderr)
+#         sys.stderr.flush()
+
+#         raise e
+
+# def worker_forward_model(
+#     seg_idx: int,
+#     seg_id: int,
+#     spec_wavs: np.ndarray,
+#     temp_offset: int = 0,
+#     memmap: bool = False,
+# ):
+#     """
+#     Forward model using pre-computed BLAS matrix multiplication (Option A).
+#     """
+#     try:
+#         # Batch of spectra for this region: shape (n_samples, n_wavs)
+#         region_spectra = shared_model_spectra[seg_idx]
+#         n_samples = region_spectra.shape[0]
+#         row_offset = (n_samples * seg_idx) + temp_offset
+
+#         for beam_idx, (col_start, col_end) in enumerate(WORKER_BEAM_OFFSETS):
+#             D_sliced, active_indices = WORKER_DISPERSION_MATRICES[(seg_idx, beam_idx)]
+
+#             if D_sliced.shape[0] == 0:
+#                 continue
+
+#             # Matrix Multiplication: (n_samples, W) @ (W, P_active) -> (n_samples, P_active)
+#             # Replaces inner sample loops, 1D resampling, and 2D Numba dispersion
+#             model_batch = region_spectra @ D_sliced.T
+
+#             # Scatter matrix output directly to target slice in shared memory
+#             target_cols = col_start + active_indices
+#             shared_temp_arr[
+#                 row_offset : row_offset + n_samples, target_cols
+#             ] = model_batch
+
+#         if memmap:
+#             shared_temp_arr.flush()
+
+#     except Exception as e:
+#         print(f"\n[ERROR in worker seg_idx={seg_idx}, seg_id={seg_id}]: {e}", file=sys.stderr)
+#         traceback.print_exc(file=sys.stderr)
+#         sys.stderr.flush()
+#         raise e
+
+
+from numba import jit
+
+# =====================================================================
+# FAST NUMBA DISPERSION KERNEL (1D Flattened Sparse Input)
+# =====================================================================
+# @jit(nopython=True, fastmath=True, cache=True)
+# def disperse_sparse_kernel(
+#     spec_resampled,    # 1D resampled spectrum on trace grid (length L)
+#     flat_pixels,       # 1D array of non-zero flux values for this segment
+#     y_offsets,         # 1D array of y-coordinates relative to origin
+#     x_offsets,         # 1D array of x-coordinates relative to origin
+#     flat_index,        # Trace base indices
+#     yfrac_beam,        # Fractional trace offsets
+#     sens_beam,         # Beam sensitivity
+#     shg_x,             # 2D output grid stride (width)
+#     nl,                # Total active mask size
+#     out_model          # Output buffer slice
+# ):
+#     """
+#     Direct sparse dispersion kernel. Operates strictly on non-zero pixels.
+#     """
+#     n_pix = len(flat_pixels)
+#     n_trace = len(flat_index)
+
+#     for p in range(n_pix):
+#         fl_ij = flat_pixels[p]
+#         j = y_offsets[p]
+#         i = x_offsets[p]
+
+#         for k in range(n_trace):
+#             ysk = sens_beam[k] * spec_resampled[k]
+#             if ysk == 0.0:
+#                 continue
+
+#             yfk = yfrac_beam[k]
+#             k0 = flat_index[k]
+#             scl_flk = ysk * fl_ij
+
+#             k1 = k0 + j * shg_x + i
+#             if 0 <= k1 < nl:
+#                 out_model[k1] += scl_flk * yfk
+
+#             k2 = k0 + (j - 1) * shg_x + i
+#             if 0 <= k2 < nl:
+#                 out_model[k2] += scl_flk * (1.0 - yfk)
+
+
 def init_forward_model(
     shared_model_spectra_name: str,
-    shared_model_spectra_shape: tuple[int],
+    shared_model_spectra_shape: tuple[int, ...],
     shared_temp_arr_name: str,
-    shared_temp_arr_shape: tuple[int],
-    beams: MultiBeam | None = None,
+    shared_temp_arr_shape: tuple[int, ...],
+    resample_R_list: list,
+    sparse_pixels_dict: dict,
+    beam_offsets: list,
+    beams=None,
 ):
-
     global shm_model_spectra, shared_model_spectra
     shm_model_spectra = shared_memory.SharedMemory(
         name=shared_model_spectra_name, create=False
@@ -1764,71 +2282,154 @@ def init_forward_model(
         shared_temp_arr_shape, dtype=float_dtype, buffer=shm_temp_arr.buf
     )
 
-    if beams is not None:
-        global multibeam_object
-        multibeam_object = deepcopy(beams)
+    global WORKER_R_LIST, WORKER_SPARSE_PIXELS, WORKER_BEAM_OFFSETS, WORKER_BEAM_METADATA
+    WORKER_R_LIST = resample_R_list
+    WORKER_SPARSE_PIXELS = sparse_pixels_dict
+    WORKER_BEAM_OFFSETS = beam_offsets
 
-    return shared_model_spectra, shared_temp_arr
+    #     # Extract static trace parameters from MultiBeam
+    #     WORKER_BEAM_METADATA = []
+    #     if beams is not None:
+    #         for beam in beams.beams:
+    #             b = beam.beam
+    #             WORKER_BEAM_METADATA.append({
+    #                 "flat_index": b.flat_index.astype(np.int64),
+    #                 "yfrac_beam": b.yfrac_beam.astype(float_dtype),
+    #                 "sens_beam": b.sensitivity_beam.astype(float_dtype),
+    #                 "shg_x": int(b.sh_beam[1]),
+    #                 "nl": int(np.prod(b.sh_beam)),
+    #                 "fit_mask": beam.fit_mask,
+    #             })
+
+    WORKER_BEAM_METADATA = []
+    if beams is not None:
+        for beam in beams.beams:
+            b = beam.beam
+            WORKER_BEAM_METADATA.append(
+                {
+                    "flat_index": b.flat_index.astype(np.int64),
+                    "yfrac_beam": b.yfrac_beam.astype(float_dtype),
+                    "sens_beam": b.sensitivity_beam.astype(float_dtype),
+                    # "dlam_beam": np.abs(np.gradient(b.lam_beam)).astype(float_dtype), # NEW: Dispersion
+                    # "cgs_factor": float(1e17), # NEW: Match grizli's is_cgs=True scaling
+                    "cgs_factor": (
+                        1
+                    ),  # float(1e17), # NEW: Match grizli's is_cgs=True scaling
+                    "shg_x": int(b.sh_beam[1]),
+                    "nl": int(np.prod(b.sh_beam)),
+                    "fit_mask": beam.fit_mask,
+                }
+            )
+
+
+@jit(nopython=True, fastmath=True, cache=True)
+def disperse_sparse_kernel(
+    spec_resampled,
+    flat_pixels,
+    y_offsets,
+    x_offsets,
+    flat_index,
+    yfrac_beam,
+    sens_beam,
+    # dlam_beam,         # NEW: Delta lambda per pixel for integration
+    cgs_factor,  # NEW: CGS unit scaling (e.g., 1e-17)
+    shg_x,
+    nl,
+    out_model,
+):
+    """
+    Direct sparse dispersion kernel with strict flux conservation.
+    """
+    n_pix = len(flat_pixels)
+    n_trace = len(flat_index)
+
+    for p in range(n_pix):
+        fl_ij = flat_pixels[p]
+        j = y_offsets[p]
+        i = x_offsets[p]
+
+        for k in range(n_trace):
+            # FIX 1A & 1B: Multiply by dispersion (dlam_beam) and CGS factor
+            ysk = sens_beam[k] * spec_resampled[k] * cgs_factor
+            # ysk = sens_beam[k] * spec_resampled[k] * dlam_beam[k] * cgs_factor
+            if ysk == 0.0:
+                continue
+
+            yfk = yfrac_beam[k]
+            k0 = flat_index[k]
+            scl_flk = ysk * fl_ij
+
+            k1 = k0 + j * shg_x + i
+            if 0 <= k1 < nl:
+                out_model[k1] += scl_flk * yfk
+
+            k2 = k0 + (j - 1) * shg_x + i
+            if 0 <= k2 < nl:
+                out_model[k2] += scl_flk * (1.0 - yfk)
 
 
 def worker_forward_model(
     seg_idx: int,
     seg_id: int,
-    spec_wavs: np.ndarray[float],
+    spec_wavs: np.ndarray,
     temp_offset: int = 0,
     memmap: bool = False,
 ):
     """
-    Forward model all template spectra for a given region.
-
-    We do not assume that segmentation IDs are 0-indexed, nor that they
-    are contiguous, hence the requirement for both the index and value in
-    the function parameters.
-
-    Parameters
-    ----------
-    seg_idx : int
-        The index of the region in an ordered array of IDs.
-    seg_id : int
-        The actual ID of the region.
-    spec_wavs : np.ndarray[float]
-        A 1D array of wavelengths.
-    temp_offset : int, optional
-        The fixed offset into the shared template array, to allow for
-        polynomial or background templates. By default ``0``.
-    memmap : bool, optional
-        Whether the shared forward-modelled array is backed by a binary
-        file on disk using `numpy.memmap`. By default, ``False``.
+    Zero-allocation sparse forward model.
     """
+    try:
+        region_spectra = shared_model_spectra[seg_idx]
+        n_samples = region_spectra.shape[0]
+        row_offset = (n_samples * seg_idx) + temp_offset
 
-    direct_masked = [
-        beam.beam.direct * (beam.regions_seg_map == seg_id)
-        for beam in multibeam_object.beams
-    ]
+        for sample_i in range(n_samples):
+            temp_spec = region_spectra[sample_i]
+            row_idx = row_offset + sample_i
 
-    temp_resamp_1d = np.zeros((2, len(spec_wavs)))
-    temp_resamp_1d[0, :] = spec_wavs
+            for beam_idx, (col_start, col_end) in enumerate(WORKER_BEAM_OFFSETS):
+                fluxes, y_offs, x_offs = WORKER_SPARSE_PIXELS[(seg_idx, beam_idx)]
+                if len(fluxes) == 0:
+                    continue
 
-    row_offset = (shared_model_spectra[seg_idx].shape[0] * seg_idx) + temp_offset
+                meta = WORKER_BEAM_METADATA[beam_idx]
+                R = WORKER_R_LIST[beam_idx]
 
-    for sample_i, temp_spec in enumerate(shared_model_spectra[seg_idx]):
-        temp_resamp_1d[1, :] = temp_spec
-        tmodel = np.hstack(
-            [
-                beam.compute_model(
-                    spectrum_1d=temp_resamp_1d,
-                    thumb=direct,
-                    in_place=False,
-                    is_cgs=True,
-                )[beam.fit_mask]
-                for beam, direct in zip(multibeam_object.beams, direct_masked)
-            ]
+                # Fast 1D Matrix Resampling: (L_beam x W) @ (W,) -> (L_beam,)
+                spec_resampled = R @ temp_spec
+
+                # Allocate temporary 2D spectrum frame
+                full_model_2d = np.zeros(meta["nl"], dtype=float_dtype)
+
+                # Numba sparse dispersion kernel
+                disperse_sparse_kernel(
+                    spec_resampled,
+                    fluxes,
+                    y_offs,
+                    x_offs,
+                    meta["flat_index"],
+                    meta["yfrac_beam"],
+                    meta["sens_beam"],
+                    # meta["dlam_beam"],
+                    meta["cgs_factor"],
+                    meta["shg_x"],
+                    meta["nl"],
+                    full_model_2d,
+                )
+
+                # Write directly into active fit_mask slice
+                shared_temp_arr[row_idx, col_start:col_end] = full_model_2d[
+                    meta["fit_mask"]
+                ]
+
+        if memmap:
+            shared_temp_arr.flush()
+
+    except Exception as e:
+        print(
+            f"\n[ERROR in worker seg_idx={seg_idx}, seg_id={seg_id}]: {e}",
+            file=sys.stderr,
         )
-
-        shared_temp_arr[
-            row_offset + sample_i,
-            :,
-        ] += tmodel
-
-    if memmap:
-        shared_temp_arr.flush()
+        traceback.print_exc(file=sys.stderr)
+        sys.stderr.flush()
+        raise e
