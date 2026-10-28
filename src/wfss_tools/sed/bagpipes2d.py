@@ -15,6 +15,63 @@ from numpy.typing import ArrayLike
 
 
 class Bagpipes2D:
+    """
+    A class for performing 2D SED fits with Bagpipes.
+
+    Parameters
+    ----------
+    obj_z : float | ArrayLike
+        The redshift of the object to fit. If a scalar value is
+        passed, and ``z_range==0.0``, the object will be fit to a
+        single redshift value. If ``z_range!=0.0``, this will be the
+        centre of the redshift window. If an array is passed, this
+        explicitly sets the redshift range to use for fitting.
+    config : dict | PathLike | None, optional
+        Either a dictionary, or the TOML-formatted configuration file
+        containing the parameters to use for the fit. Any other
+        parameters passed on initialisation will override those set in the
+        configuration file.
+    fit_instructions : dict | None, optional
+        A dictionary containing instructions on the kind of model
+        which should be fitted to the data. If ``None`` (default),
+        instructions are loaded from ``config`` or generated using
+        ``fit_params_kwargs``.
+    fit_params_kwargs : dict | None, optional
+        Keyword arguments passed to generate fit parameters if
+        ``fit_instructions`` is not provided.
+    n_samples : int | None, optional
+        The number of samples to generate for the model grid. If
+        ``None`` (default), uses the value from ``config`` or defaults
+        to ``1e5``.
+    remake_atlas : bool | None, optional
+        If ``True``, any existing model atlas with the same name will
+        be recreated and overwritten. If ``None`` (default), uses the
+        value from ``config`` or defaults to ``False``.
+    n_cores : int | None, optional
+        The number of processes to use when generating the model grid or
+        fitting. If set to ``0``, the code will run on a single process.
+        If set to an integer less than 0, this will run on the number of
+        cores returned by `multiprocessing.cpu_count`. If ``None``
+        (default), uses the value from ``config`` or defaults to ``4``.
+    overwrite_fit : bool | None, optional
+        If ``True``, then any existing posterior distributions and
+        output catalogues will be overwritten. If ``None`` (default),
+        uses the value from ``config`` or defaults to ``False``.
+    root_dir : PathLike | None, optional
+        The root directory for all input and output files. If ``None``
+        (default), uses the value from ``config`` or defaults to
+        ``"."``.
+    out_dir : PathLike | None, optional
+        The output directory relative to ``root_dir`` where output
+        files will be saved. If ``None`` (default), uses the value from
+        ``config`` or defaults to ``"."``.
+    atlas_dir : PathLike | None, optional
+        The directory where model atlases are stored. If ``None``
+        (default), uses the value from ``config`` or defaults to
+        ``<out_dir>/pipes/atlases``.
+    seed : int, optional
+        Random seed for sample generation, by default ``2744``.
+    """
 
     def __init__(
         self,
@@ -240,20 +297,8 @@ class Bagpipes2D:
 
         return self.atlas_path
 
-    # def run(self):
-
-    #     self.atlas_path = self.gen_atlas(**self.sed_fit_kwargs)
-    #     self.fit_atlas(
-    #         self.atlas_path,
-    #         self.binned_data_path,
-    #         overwrite_fit=self.overwrite_atlas_fit,
-    #         n_cores=self.n_cores_atlas_fit,
-    #         z_range=self.sed_fit_kwargs["z_range"],
-    #     )
-
     def fit_atlas(
         self,
-        # atlas_path: PathLike,
         binned_data_path: PathLike,
         binned_data_hdu: str | int | None = "PHOT_CAT",
         bagpipes_atlas_params: dict | None = None,
