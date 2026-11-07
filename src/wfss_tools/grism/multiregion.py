@@ -464,7 +464,7 @@ class MultiRegionFit:
         binning_kwargs: dict,
         use_stacks: bool = True,
         beams_path: PathLike | None = None,
-        img_cutout: int = 500,
+        bounding_cutout_kwargs: dict | None = None,
         stack_beam_kwargs: dict = {},
         **multibeam_kwargs,
     ) -> tuple[PathLike, PathLike]:
@@ -484,10 +484,9 @@ class MultiRegionFit:
             ``None`` (default), this will be selected automatically based
             on the ``obj_id`` and directory structure specified in the
             configuration file.
-        img_cutout : int, optional
-            Make a slice of the original image with size in pixels
-            ``[-cutout,+cutout]`` around the centre of the object, before
-            alignment. By default, ``cutout=500``.
+        bounding_cutout_kwargs : dict | None, optional
+            Any additional parameters to pass through to
+            `~wfss_tools.grism.utils.get_bounding_cutout_slice`.
         stack_beam_kwargs : dict, optional
             Any additional parameters to pass through to
             `~wfss_tools.grism.utils.gen_stacked_beams`.
@@ -576,7 +575,7 @@ class MultiRegionFit:
                 info_dict=self.info_dict,
                 out_dir=binned_data_dir / f"{self.obj_id:0>5}",
                 overwrite=False,
-                cutout=img_cutout,
+                bounding_cutout_kwargs=bounding_cutout_kwargs,
             )
 
             _seg = fits.getdata(new_beam_loc, "SEG")
