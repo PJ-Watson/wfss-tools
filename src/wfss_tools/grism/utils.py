@@ -519,11 +519,96 @@ def shift_and_accumulate_2d(
                     out_wht[oy, ox] += weight
 
 
+def get_bounding_cutout_slice(
+    out_wcs: WCS,
+    out_shape: tuple,
+    in_wcs: WCS,
+    in_shape: tuple,
+    buffer_frac: float = 0.05,
+    n_samples: int = 2,
+) -> tuple[slice, slice]:
+    """
+    Find the minimal slice (sly, slx) covering the target output frame.
+
+    This finds the slice in the input image frame, accounting for
+    WCS distortions. For extremely distorted frames, the number of samples
+    should be increased, rather than relying on the corner reprojection.
+
+    Parameters
+    ----------
+    out_wcs : WCS
+        The target image WCS.
+    out_shape : tuple
+        The target image shape, in the order ``(ny_out, nx_out)``.
+    in_wcs : WCS
+        The original image WCS object.
+    in_shape : tuple
+        The shape of the original image, ``(ny_in, nx_in)``.
+    buffer_frac : float, optional
+        The fractional padding to add to the bounding box extent, by
+        default ``0.05``.
+    n_samples : int, optional
+        The number of perimeter sample points per side, by default ``2``
+        (i.e. only the corners are considered).
+
+    Returns
+    -------
+    tuple[slice, slice]
+        The ``(sly, slx)`` slices to extract from ``orig_data``.
+    """
+    ny_out, nx_out = out_shape
+    ny_in, nx_in = in_shape
+
+    # Sample the perimeter of the target output frame, in pixel coordinates
+    x_edge = np.linspace(-0.5, nx_out - 0.5, n_samples)
+    y_edge = np.linspace(-0.5, ny_out - 0.5, n_samples)
+
+    top = np.column_stack([x_edge, np.full(n_samples, -0.5)])
+    bottom = np.column_stack([x_edge, np.full(n_samples, ny_out - 0.5)])
+    left = np.column_stack([np.full(n_samples, -0.5), y_edge])
+    right = np.column_stack([np.full(n_samples, nx_out - 0.5), y_edge])
+
+    perimeter_out = np.vstack([top, bottom, left, right])
+
+    # Map the perimeter from the target pixel space -> world (RA, Dec),
+    # and again from world (RA, Dec) -> input pixel space
+    ra, dec = out_wcs.all_pix2world(perimeter_out[:, 0], perimeter_out[:, 1], 0)
+    x_in, y_in = in_wcs.all_world2pix(ra, dec, 0)
+
+    # Find the minimal bounding box in the input pixel space
+    x_min, x_max = np.min(x_in), np.max(x_in)
+    y_min, y_max = np.min(y_in), np.max(y_in)
+
+    # Add a fractional buffer (to account for pixelation effects)
+    w = x_max - x_min
+    h = y_max - y_min
+    buf_x = max(2, int(np.ceil(w * buffer_frac)))
+    buf_y = max(2, int(np.ceil(h * buffer_frac)))
+
+    x0 = int(np.floor(x_min)) - buf_x
+    x1 = int(np.ceil(x_max)) + buf_x
+    y0 = int(np.floor(y_min)) - buf_y
+    y1 = int(np.ceil(y_max)) + buf_y
+
+    # Clip the slice indices to the extent of the input image
+    x0 = max(0, x0)
+    x1 = min(nx_in, x1)
+    y0 = max(0, y0)
+    y1 = min(ny_in, y1)
+
+    if x0 >= x1 or y0 >= y1:
+        raise ValueError(
+            "No spatial overlap detected between input image and reference beam footprint."
+        )
+
+    return slice(y0, y1), slice(x0, x1)
+
+
 def align_direct_images(
     ref_beam: BeamCutout,
     info_dict: dict,
     out_dir: PathLike = None,
-    cutout=200,
+    bounding_cutout_kwargs: dict | None = None,
     overwrite: bool = False,
 ) -> dict:
     """
@@ -546,7 +631,9 @@ def align_direct_images(
     out_dir : PathLike, optional
         The location in which the realigned images will be saved. This
         will default to the current working directory.
-    cutout : int, optional
+    bounding_cutout_kwargs : dict, optional
+        Keyword arguments to pass through to `get_bounding_cutout_slice`,
+        by default ``None``.
         Make a slice of the original image with size ``[-cutout,+cutout]``
         around the centre position of the desired object, before passing
         to blot. By default, ``cutout=200``.
@@ -593,32 +680,33 @@ def align_direct_images(
                     if not hasattr(orig_wcs, "_naxis1") & hasattr(orig_wcs, "_naxis"):
                         orig_wcs._naxis1, orig_wcs._naxis2 = orig_wcs._naxis
 
-                    if "PHOTPLAM" in orig_header:
-                        orig_photplam = orig_header["PHOTPLAM"]
-                    else:
-                        orig_photplam = 1.0
+                    # # Central pixel in original image
+                    # xy = np.asarray(
+                    #     np.round(orig_wcs.all_world2pix([beam_ra], [beam_dec], 0)),
+                    #     dtype=int,
+                    # ).flatten()
 
-                    if "PHOTFLAM" in orig_header:
-                        orig_photflam = orig_header["PHOTFLAM"]
-                    else:
-                        orig_photflam = 1.0
+                    # sh = orig_data.shape  # (ny, nx)
+                    # x0, x1 = max(xy[0] - cutout, 0), min(xy[0] + cutout, sh[1])
+                    # y0, y1 = max(xy[1] - cutout, 0), min(xy[1] + cutout, sh[0])
 
-                    try:
-                        orig_filter = grizli_utils.parse_filter_from_header(orig_header)
-                    except:
-                        orig_filter = "N/A"
+                    # if x0 >= x1 or y0 >= y1:
+                    #     raise ValueError(
+                    #         f"Cutout slice for {v[img_type]} is empty. "
+                    #         f"Check if image overlaps with beam center "
+                    #         f"({beam_ra}, {beam_dec})."
+                    #     )
 
-                    xy = np.asarray(
-                        np.round(orig_wcs.all_world2pix([beam_ra], [beam_dec], 0)),
-                        dtype=int,
-                    ).flatten()
+                    # slx = slice(x0, x1)
+                    # sly = slice(y0, y1)
 
-                    sh = orig_data.shape
-                    slx = slice(
-                        np.maximum(xy[0] - cutout, 0), np.minimum(xy[0] + cutout, sh[1])
-                    )
-                    sly = slice(
-                        np.maximum(xy[1] - cutout, 0), np.minimum(xy[1] + cutout, sh[0])
+                    # With perimeter footprint slice (e.g. 5% buffer):
+                    sly, slx = get_bounding_cutout_slice(
+                        out_wcs=beam_wcs,
+                        out_shape=ref_beam.direct.sh,
+                        in_wcs=orig_wcs,
+                        in_shape=orig_data.shape,
+                        buffer_frac=0.05,
                     )
 
                     if hasattr(beam_wcs, "idcscale"):
