@@ -610,6 +610,8 @@ def align_direct_images(
     out_dir: PathLike = None,
     bounding_cutout_kwargs: dict | None = None,
     overwrite: bool = False,
+    reproject_method: str = "exact",
+    subpixel_sampling: int = 5,
 ) -> dict:
     """
     Align a set of images to the orientation of a dispersed beam.
@@ -640,6 +642,14 @@ def align_direct_images(
     overwrite : bool, optional
         Overwrite existing images if they exist already. By default
         ``False``.
+    reproject_method : str, optional
+        The function to use for reprojecting the images to the same WCS as
+        the beam. Must be one of ``"exact"`` (`reproject.reproject_exact`)
+        or ``"subpixel"`` (`wfss_tools.grism.utils.reproject_subpixel`).
+        By default, ``"exact"``.
+    subpixel_sampling : int, optional
+        The subpixel sampling factor to use for reprojection. Only used if
+        `reproject_method="subpixel"`.
 
     Returns
     -------
@@ -657,90 +667,83 @@ def align_direct_images(
 
     beam_wcs = ref_beam.direct.wcs
 
+    if bounding_cutout_kwargs is None:
+        bounding_cutout_kwargs = {}
+
     beam_ra, beam_dec = beam_wcs.all_pix2world(
-        [(np.asarray(ref_beam.direct.sh) + 1) / 2],
+        [(np.asarray(ref_beam.direct.sh[::-1]) + 1) / 2],
         1,
     ).flatten()
 
-    new_info_dict = info_dict.copy()
+    new_info_dict = deepcopy(info_dict)
+
+    beam_area = beam_wcs.proj_plane_pixel_area().value
+
+    from reproject import reproject_adaptive, reproject_exact
+
+    match reproject_method:
+        case "exact":
+            from reproject import reproject_exact as reproject_fn
+
+            reproject_kwargs = dict(
+                parallel=True,
+                block_size="auto",
+                return_footprint=False,
+            )
+        case "subpixel":
+            reproject_fn = reproject_subpixel
+            reproject_kwargs = dict(subsample=subpixel_sampling)
+
     for k, v in info_dict.items():
         for img_type in ["sci", "var"]:
-            if (not (out_dir / Path(v[img_type]).name).is_file()) or overwrite:
+            out_file = out_dir / Path(v[img_type]).name
+
+            if not out_file.is_file() or overwrite:
                 with fits.open(v[img_type]) as orig_hdul:
                     orig_data = orig_hdul[0].data
-                    orig_header = orig_hdul[0].header
-                    orig_image_filename = Path(orig_hdul.filename()).name
+                    orig_header = orig_hdul[0].header.copy()
 
                     if orig_data.dtype not in [np.float32, np.dtype(">f4")]:
                         orig_data = orig_data.astype(np.float32)
 
                     orig_wcs = WCS(orig_header, relax=True)
-                    orig_wcs.pscale = grizli_utils.get_wcs_pscale(orig_wcs)
 
-                    if not hasattr(orig_wcs, "_naxis1") & hasattr(orig_wcs, "_naxis"):
-                        orig_wcs._naxis1, orig_wcs._naxis2 = orig_wcs._naxis
-
-                    # # Central pixel in original image
-                    # xy = np.asarray(
-                    #     np.round(orig_wcs.all_world2pix([beam_ra], [beam_dec], 0)),
-                    #     dtype=int,
-                    # ).flatten()
-
-                    # sh = orig_data.shape  # (ny, nx)
-                    # x0, x1 = max(xy[0] - cutout, 0), min(xy[0] + cutout, sh[1])
-                    # y0, y1 = max(xy[1] - cutout, 0), min(xy[1] + cutout, sh[0])
-
-                    # if x0 >= x1 or y0 >= y1:
-                    #     raise ValueError(
-                    #         f"Cutout slice for {v[img_type]} is empty. "
-                    #         f"Check if image overlaps with beam center "
-                    #         f"({beam_ra}, {beam_dec})."
-                    #     )
-
-                    # slx = slice(x0, x1)
-                    # sly = slice(y0, y1)
-
-                    # With perimeter footprint slice (e.g. 5% buffer):
                     sly, slx = get_bounding_cutout_slice(
                         out_wcs=beam_wcs,
                         out_shape=ref_beam.direct.sh,
                         in_wcs=orig_wcs,
                         in_shape=orig_data.shape,
-                        buffer_frac=0.05,
+                        **bounding_cutout_kwargs,
                     )
 
-                    if hasattr(beam_wcs, "idcscale"):
-                        if beam_wcs.idcscale is None:
-                            delattr(beam_wcs, "idcscale")
+                    sub_wcs = orig_wcs.slice([sly, slx])
 
-                    if not hasattr(beam_wcs, "_naxis1") & hasattr(beam_wcs, "_naxis"):
-                        beam_wcs._naxis1, beam_wcs._naxis2 = beam_wcs._naxis
-
-                    blotted = ablot.do_blot(
-                        orig_data[sly, slx],
-                        orig_wcs.slice([sly, slx]),
+                    blotted = reproject_fn(
+                        (orig_data[sly, slx], sub_wcs),
                         beam_wcs,
-                        1,
-                        coeffs=True,
-                        interp="sinc",
-                        sinscl=1.0,
-                        stepsize=1,
-                        wcsmap=grizli_utils.WCSMapAll,
+                        shape_out=ref_beam.direct.sh,
+                        **reproject_kwargs,
                     )
 
-                    orig_header.update(beam_wcs.to_header())
+                    if reproject_method == "exact":
+                        blotted *= beam_area / (sub_wcs.proj_plane_pixel_area().value)
+
+                    # Replace non-overlapping NaN values with zero
+                    blotted = np.nan_to_num(blotted, nan=0.0)
+
+                    out_header = beam_wcs.to_header()
+                    out_header["EXTEND"] = True
 
                     new_hdul = fits.HDUList()
                     new_hdul.append(
-                        fits.ImageHDU(
+                        fits.PrimaryHDU(
                             data=blotted.astype(np.float32),
-                            header=orig_header,
+                            header=out_header,
                         )
                     )
-                    new_hdul.writeto(
-                        (out_dir / Path(v[img_type]).name), overwrite=overwrite
-                    )
-            new_info_dict[k][img_type] = str(out_dir / Path(v[img_type]).name)
+                    new_hdul.writeto(out_file, overwrite=overwrite)
+
+            new_info_dict[k][img_type] = str(out_file)
 
     return new_info_dict
 
