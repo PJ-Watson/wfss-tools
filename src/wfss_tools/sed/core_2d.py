@@ -110,7 +110,7 @@ class SEDFitter2D:
         Returns
         -------
         SEDFitResult
-            The standardised Stage 2 output contract.
+            The standardised Stage 2 output object.
         """
         raise NotImplementedError("Subclasses should implement this method.")
 
@@ -161,3 +161,97 @@ class SEDFitter2D:
             `~wfss_tools.grism.multiregion.MultiRegionFit`.
         """
         raise NotImplementedError("Subclasses should implement this method.")
+
+
+class NullSEDFitter(SEDFitter2D):
+    """
+    A pass-through SED fitter for prior-free grism fitting.
+
+    Currently this is designed to work with `grizli` templates.
+
+    This bypasses photometric SED fitting while preserving the Stage 2 ->
+    Stage 3 dataclass, allowing `~wfss_tools.grism.multiregion.MultiRegionFit`
+    to fit spatially-resolved empirical `grizli` templates across the
+    Stage 1 segmentation regions.
+    """
+
+    fitter_name: str = "grizli_empirical"
+
+    def fit(self, binned_data_path: PathLike, **kwargs) -> SEDFitResult:
+        """
+        Return a pass-through `SEDFitResult` without running an SED fit.
+
+        Parameters
+        ----------
+        binned_data_path : PathLike
+            The location of the binned photometric catalogue and
+            segmentation map FITS file produced by Stage 1.
+        **kwargs : dict
+            Ignored.
+
+        Returns
+        -------
+        SEDFitResult
+            A metadata-only dataclass pointing to ``binned_data_path``.
+        """
+        binned_path = Path(binned_data_path)
+        return SEDFitResult(
+            fitter_name=self.fitter_name,
+            run_name=f"{binned_path.stem.removesuffix('_data')}_empirical",
+            binned_data_path=binned_path,
+            metadata={"MRSEDFIT": (self.fitter_name, "2D SED fitting backend")},
+        )
+
+    def get_sampler(
+        self,
+        fit_result: SEDFitResult,
+        region_ids: ArrayLike,
+        spec_wavs: ArrayLike = np.arange(10000.0, 23000.0, 22.5),
+        veldisp: float = 50.0,
+        seed: int = 2744,
+        cpu_count: int = -1,
+        cache_all_spectra: bool = False,
+        **kwargs,
+    ) -> GrizliTemplateSampler:
+        """
+        Instantiate a `~wfss_tools.grism.samplers.GrizliTemplateSampler`.
+
+        Parameters
+        ----------
+        fit_result : SEDFitResult
+            The output returned by `fit`.
+        region_ids : ArrayLike
+            The ordered array of spatial bin IDs to sample.
+        spec_wavs : ArrayLike, optional
+            The wavelength grid (in Angstroms) on which templates will be
+            evaluated.
+        veldisp : float, optional
+            The velocity dispersion of the template spectra in km/s, by
+            default ``50.0``.
+        seed : int, optional
+            Random seed for template sampling, by default ``2744``.
+        cpu_count : int, optional
+            Number of worker processes for template generation, by default
+            ``-1``.
+        cache_all_spectra : bool, optional
+            Whether to pre-generate and cache spectra in memory, by default
+            ``False``.
+        **kwargs : dict
+            Additional keyword arguments forwarded to `GrizliTemplateSampler`.
+
+        Returns
+        -------
+        GrizliTemplateSampler
+            An initialised `grizli` template sampler.
+        """
+        scalar_z = float(np.median(self.obj_z))
+        return GrizliTemplateSampler(
+            posterior_dir=fit_result.binned_data_path.parent,
+            seed=seed,
+            cpu_count=cpu_count,
+            cache_all_spectra=cache_all_spectra,
+            veldisp=veldisp,
+            spec_wavs=np.asarray(spec_wavs),
+            redshift=scalar_z,
+            **kwargs,
+        )
