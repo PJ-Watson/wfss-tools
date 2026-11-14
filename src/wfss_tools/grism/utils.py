@@ -952,43 +952,78 @@ def align_direct_images(
     return new_info_dict
 
 
-def gen_psf(multibeam: MultiBeam) -> dict:
+def gen_psf(
+    multibeam: MultiBeam,
+    bounding_cutout_kwargs: dict | None = None,
+    reproject_method: str = "exact",
+    subpixel_sampling: int = 5,
+) -> dict:
     """
     Generate a PSF aligned with the direct image in extracted beams.
 
     The PSF matches the rotation of the direct imaging using the
-    ``"PA_APER"`` header keyword.
+    ``"PA_APER"`` header keyword, and is reprojected onto the direct image
+    WCS of each unique grism and filter combination.
 
     Parameters
     ----------
     multibeam : MultiBeam
         The grizli-extracted multiple beams object.
+    bounding_cutout_kwargs : dict, optional
+        Keyword arguments to pass through to `get_bounding_cutout_slice`,
+        by default ``None``.
+    reproject_method : str, optional
+        The function to use for reprojecting the PSF to the same WCS as
+        the beam. Must be one of ``"exact"`` (`reproject.reproject_exact`)
+        or ``"subpixel"`` (`wfss_tools.grism.utils.reproject_subpixel`).
+        By default, ``"exact"``.
+    subpixel_sampling : int, optional
+        The subpixel sampling factor to use for reprojection. Only used if
+        ``reproject_method="subpixel"``. By default ``5``.
 
     Returns
     -------
     dict
         A dictionary with keys corresponding to each unique grism and filter
-        combination, and values of the PSF image.
+        combination, and values of the reprojected PSF image.
     """
-
     import stpsf
-    from drizzlepac.astrodrizzle import ablot
+
+    if bounding_cutout_kwargs is None:
+        bounding_cutout_kwargs = {}
+
+    match reproject_method:
+        case "exact":
+            from reproject import reproject_exact as reproject_fn
+
+            reproject_kwargs = dict(
+                parallel=True,
+                block_size="auto",
+                return_footprint=False,
+            )
+        case "subpixel":
+            reproject_fn = reproject_subpixel
+            reproject_kwargs = dict(subsample=subpixel_sampling)
+        case _:
+            raise ValueError(
+                f"Invalid reproject_method '{reproject_method}'. "
+                "Must be one of 'exact' or 'subpixel'."
+            )
 
     psf_aligned_images = {}
 
-    for i, (beam_cutout, cutout_shape) in enumerate(
-        zip(multibeam.beams, multibeam.Nflat)
-    ):
+    for beam_cutout in multibeam.beams:
         beam_name = f"{beam_cutout.grism.pupil}-{beam_cutout.grism.filter}"
         if beam_name not in psf_aligned_images:
             header = beam_cutout.direct.header
             beam_wcs = beam_cutout.direct.wcs
+            beam_shape = beam_cutout.direct.sh
+            beam_area = beam_wcs.proj_plane_pixel_area().value
+
             inst = stpsf.instrument(header["INSTRUME"])
             inst.set_position_from_aperture_name("NIS_CEN")
             inst.filter = header["PUPIL"]
-            dateobs = astropy.time.Time(
-                header["DATE-BEG"]
-            )  # + 'T' + header['TIME-OBS'])
+            dateobs = astropy.time.Time(header["DATE-BEG"])
             inst.load_wss_opd_by_date(
                 dateobs, verbose=False, plot=False, choice="closest"
             )
@@ -996,7 +1031,10 @@ def gen_psf(multibeam: MultiBeam) -> dict:
                 fov_pixels=np.nanmax(beam_wcs._naxis) * 2 + 1,
             )
             psf_data = psf["DET_DIST"].data
-            psf_wcs = WCS(psf["DET_DIST"])
+            if psf_data.dtype not in [np.float32, np.dtype(">f4")]:
+                psf_data = psf_data.astype(np.float32)
+
+            psf_wcs = WCS(naxis=2)
             psf_wcs.wcs.crpix = (np.asarray(psf_data.shape[::-1]) + 1) / 2
             psf_wcs.wcs.crval = [multibeam.ra, multibeam.dec]
             rotation_angle_rad = np.radians(header["PA_APER"] - 360)
@@ -1010,19 +1048,32 @@ def gen_psf(multibeam: MultiBeam) -> dict:
                 * (inst.pixelscale * u.arcsec).to(u.deg).value
             )
             psf_wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+            psf_wcs.wcs.cunit = ["deg", "deg"]
+            psf_wcs.wcs.set()
 
-            psf_wcs.pscale = grizli_utils.get_wcs_pscale(psf_wcs)
-
-            blotted = ablot.do_blot(
-                psf_data.astype(np.float32),
-                psf_wcs,
-                beam_wcs,
-                1,
-                coeffs=True,
-                sinscl=1.0,
-                stepsize=1,
-                wcsmap=grizli_utils.WCSMapAll,
+            sly, slx = get_bounding_cutout_slice(
+                out_wcs=beam_wcs,
+                out_shape=beam_shape,
+                in_wcs=psf_wcs,
+                in_shape=psf_data.shape,
+                **bounding_cutout_kwargs,
             )
-            psf_aligned_images[beam_name] = blotted
+
+            sub_wcs = psf_wcs.slice([sly, slx])
+
+            blotted = reproject_fn(
+                (psf_data[sly, slx], sub_wcs),
+                beam_wcs,
+                shape_out=beam_shape,
+                **reproject_kwargs,
+            )
+
+            if reproject_method == "exact":
+                blotted *= beam_area / (sub_wcs.proj_plane_pixel_area().value)
+
+            # Replace non-overlapping NaN values with zero
+            blotted = np.nan_to_num(blotted, nan=0.0)
+
+            psf_aligned_images[beam_name] = blotted.astype(np.float32)
 
     return psf_aligned_images
