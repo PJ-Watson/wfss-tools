@@ -542,6 +542,194 @@ def shift_and_accumulate_2d(
                     out_wht[oy1, ox1] += w_in * w11
 
 
+@njit(fastmath=False, parallel=False, cache=True, boundscheck=False)
+def _reproject_subpixel_fast_numba(
+    in_data: np.ndarray,
+    map_x: np.ndarray,
+    map_y: np.ndarray,
+    out_grid: np.ndarray,
+    subsample: int = 4,
+) -> None:
+    """
+    Fused Numba kernel for bilinear subpixel reprojection.
+
+    Parameters
+    ----------
+    in_data : numpy.ndarray
+        2D input image array to be reprojected.
+    map_x : numpy.ndarray
+        2D array of target x-coordinates at the pixel corners of ``in_data``,
+        with shape ``(ny + 1, nx + 1)``.
+    map_y : numpy.ndarray
+        2D array of target y-coordinates at the pixel corners of ``in_data``,
+        with shape ``(ny + 1, nx + 1)``.
+    out_grid : numpy.ndarray
+        2D output accumulator grid, modified in-place with accumulated flux.
+    subsample : int, optional
+        Subpixel sampling factor per side (e.g. ``4`` gives 16 subpixels per
+        pixel). By default ``4``.
+    """
+
+    ny, nx = in_data.shape
+    out_ny, out_nx = out_grid.shape
+    inv_sub = 1.0 / subsample
+    sub_flux_scale = inv_sub * inv_sub
+
+    # Precompute 1D subpixel offsets once outside the pixel loops
+    weights = np.empty(subsample, dtype=np.float64)
+    for i in range(subsample):
+        weights[i] = (i + 0.5) * inv_sub
+
+    x_hi_bound = out_nx - 0.5
+    y_hi_bound = out_ny - 0.5
+
+    for y in range(ny):
+        # Load left-edge corner coordinates for column x = 0
+        x00 = map_x[y, 0]
+        x01 = map_x[y + 1, 0]
+        y00 = map_y[y, 0]
+        y01 = map_y[y + 1, 0]
+
+        for x in range(nx):
+            x10 = map_x[y, x + 1]
+            x11 = map_x[y + 1, x + 1]
+            y10 = map_y[y, x + 1]
+            y11 = map_y[y + 1, x + 1]
+
+            val = in_data[y, x]
+            if val != 0.0 and np.isfinite(val):
+                # Coarse bounding-box check across the 4 pixel corners
+                min_x = min(min(x00, x10), min(x01, x11))
+                max_x = max(max(x00, x10), max(x01, x11))
+                min_y = min(min(y00, y10), min(y01, y11))
+                max_y = max(max(y00, y10), max(y01, y11))
+
+                if (
+                    max_x >= -0.5
+                    and min_x < x_hi_bound
+                    and max_y >= -0.5
+                    and min_y < y_hi_bound
+                ):
+                    sub_val = val * sub_flux_scale
+                    inside_all = (
+                        min_x >= -0.5
+                        and max_x < x_hi_bound
+                        and min_y >= -0.5
+                        and max_y < y_hi_bound
+                    )
+
+                    if inside_all:
+                        # Fast path: all subpixels guaranteed within output bounds
+                        for sy_i in range(subsample):
+                            v = weights[sy_i]
+                            v_inv = 1.0 - v
+
+                            x_left = v_inv * x00 + v * x01
+                            x_right = v_inv * x10 + v * x11
+                            dx_step = (x_right - x_left) * inv_sub
+                            target_x = x_left + 0.5 * dx_step
+
+                            y_left = v_inv * y00 + v * y01
+                            y_right = v_inv * y10 + v * y11
+                            dy_step = (y_right - y_left) * inv_sub
+                            target_y = y_left + 0.5 * dy_step
+
+                            for _ in range(subsample):
+                                ox = int(np.floor(target_x + 0.5))
+                                oy = int(np.floor(target_y + 0.5))
+                                out_grid[oy, ox] += sub_val
+                                target_x += dx_step
+                                target_y += dy_step
+                    else:
+                        # Boundary path: check bounds per subpixel
+                        for sy_i in range(subsample):
+                            v = weights[sy_i]
+                            v_inv = 1.0 - v
+
+                            x_left = v_inv * x00 + v * x01
+                            x_right = v_inv * x10 + v * x11
+                            dx_step = (x_right - x_left) * inv_sub
+                            target_x = x_left + 0.5 * dx_step
+
+                            y_left = v_inv * y00 + v * y01
+                            y_right = v_inv * y10 + v * y11
+                            dy_step = (y_right - y_left) * inv_sub
+                            target_y = y_left + 0.5 * dy_step
+
+                            for _ in range(subsample):
+                                ox = int(np.floor(target_x + 0.5))
+                                oy = int(np.floor(target_y + 0.5))
+                                if 0 <= ox < out_nx and 0 <= oy < out_ny:
+                                    out_grid[oy, ox] += sub_val
+                                target_x += dx_step
+                                target_y += dy_step
+
+            # Reuse right-edge corners as left-edge corners for next column
+            x00 = x10
+            x01 = x11
+            y00 = y10
+            y01 = y11
+
+
+def reproject_subpixel(
+    input_data: tuple[np.ndarray, WCS],
+    out_wcs: WCS,
+    shape_out: tuple,
+    subsample: int = 4,
+) -> np.ndarray:
+    """
+    Flux-conserving reprojection via WCS mapping and subpixel oversampling.
+
+    Parameters
+    ----------
+    input_data : tuple[numpy.ndarray, astropy.wcs.WCS]
+        A tuple containing the 2D input image array and its corresponding
+        WCS object ``(in_data, in_wcs)``.
+    out_wcs : astropy.wcs.WCS
+        Target image WCS frame.
+    shape_out : tuple
+        Target image output shape ``(ny, nx)``.
+    subsample : int, optional
+        Subpixel sampling factor per side (e.g. ``4`` gives 16 subpixels
+        per pixel). By default ``4``.
+
+    Returns
+    -------
+    numpy.ndarray
+        Flux-conserved output image array.
+    """
+
+    in_data, in_wcs = input_data
+    ny, nx = in_data.shape
+    out_grid = np.zeros(shape_out, dtype=np.float32)
+
+    # Create grid of integer pixel corners in 0-indexed pixel space:
+    # [-0.5, ..., N-0.5]
+    grid_y, grid_x = np.meshgrid(
+        np.arange(ny + 1, dtype=np.float64) - 0.5,
+        np.arange(nx + 1, dtype=np.float64) - 0.5,
+        indexing="ij",
+    )
+
+    # Evaluate WCS only at pixel corners
+    ra_corners, dec_corners = in_wcs.all_pix2world(grid_x.ravel(), grid_y.ravel(), 0)
+    map_x_raw, map_y_raw = out_wcs.all_world2pix(ra_corners, dec_corners, 0)
+
+    map_x = map_x_raw.reshape(ny + 1, nx + 1)
+    map_y = map_y_raw.reshape(ny + 1, nx + 1)
+
+    # Run numba function for subpixel evaluation and accumulation
+    _reproject_subpixel_fast_numba(
+        np.asarray(in_data, dtype=np.float32),
+        map_x,
+        map_y,
+        out_grid,
+        subsample=subsample,
+    )
+
+    return out_grid
+
+
 def get_bounding_cutout_slice(
     out_wcs: WCS,
     out_shape: tuple,
@@ -659,9 +847,6 @@ def align_direct_images(
     bounding_cutout_kwargs : dict, optional
         Keyword arguments to pass through to `get_bounding_cutout_slice`,
         by default ``None``.
-        Make a slice of the original image with size ``[-cutout,+cutout]``
-        around the centre position of the desired object, before passing
-        to blot. By default, ``cutout=200``.
     overwrite : bool, optional
         Overwrite existing images if they exist already. By default
         ``False``.
@@ -672,7 +857,7 @@ def align_direct_images(
         By default, ``"exact"``.
     subpixel_sampling : int, optional
         The subpixel sampling factor to use for reprojection. Only used if
-        `reproject_method="subpixel"`.
+        ``reproject_method="subpixel"``. By default ``5``.
 
     Returns
     -------
@@ -680,8 +865,6 @@ def align_direct_images(
         An updated version of ``info_dict``, now with the locations of the
         realigned images.
     """
-    from drizzlepac.astrodrizzle import ablot
-
     if out_dir is not None:
         out_dir = Path(out_dir)
         out_dir.mkdir(exist_ok=True, parents=True)
@@ -693,16 +876,9 @@ def align_direct_images(
     if bounding_cutout_kwargs is None:
         bounding_cutout_kwargs = {}
 
-    beam_ra, beam_dec = beam_wcs.all_pix2world(
-        [(np.asarray(ref_beam.direct.sh[::-1]) + 1) / 2],
-        1,
-    ).flatten()
-
     new_info_dict = deepcopy(info_dict)
 
     beam_area = beam_wcs.proj_plane_pixel_area().value
-
-    from reproject import reproject_adaptive, reproject_exact
 
     match reproject_method:
         case "exact":
@@ -716,6 +892,11 @@ def align_direct_images(
         case "subpixel":
             reproject_fn = reproject_subpixel
             reproject_kwargs = dict(subsample=subpixel_sampling)
+        case _:
+            raise ValueError(
+                f"Invalid reproject_method '{reproject_method}'. "
+                "Must be one of 'exact' or 'subpixel'."
+            )
 
     for k, v in info_dict.items():
         for img_type in ["sci", "var"]:
@@ -799,7 +980,7 @@ def gen_psf(multibeam: MultiBeam) -> dict:
         zip(multibeam.beams, multibeam.Nflat)
     ):
         beam_name = f"{beam_cutout.grism.pupil}-{beam_cutout.grism.filter}"
-        if not beam_name in psf_aligned_images:
+        if beam_name not in psf_aligned_images:
             header = beam_cutout.direct.header
             beam_wcs = beam_cutout.direct.wcs
             inst = stpsf.instrument(header["INSTRUME"])
@@ -816,7 +997,7 @@ def gen_psf(multibeam: MultiBeam) -> dict:
             )
             psf_data = psf["DET_DIST"].data
             psf_wcs = WCS(psf["DET_DIST"])
-            psf_wcs.wcs.crpix = (np.asarray(psf_data.shape) + 1) / 2
+            psf_wcs.wcs.crpix = (np.asarray(psf_data.shape[::-1]) + 1) / 2
             psf_wcs.wcs.crval = [multibeam.ra, multibeam.dec]
             rotation_angle_rad = np.radians(header["PA_APER"] - 360)
             psf_wcs.wcs.cd = (
