@@ -8,7 +8,7 @@ from os import PathLike
 from pathlib import Path
 
 import astropy
-import grizli.utils as grizli_utils
+import astropy.units as u
 import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
@@ -114,6 +114,8 @@ def cluster_beams_centres(
     if dbscan_kwargs is None:
         dbscan_kwargs = {"eps": 5, "min_samples": 3}
 
+    beam_idxs = np.asarray(beam_idxs)
+
     # Detector coordinate centres
     detector_coords = np.array(
         [[mb.beams[b].beam.xc, mb.beams[b].beam.yc] for b in beam_idxs]
@@ -180,7 +182,7 @@ def gen_stacked_beams(
         of an increased number of stacked beams. By default ``False``.
     dbscan_kwargs : dict, optional
         Any additional parameters to pass through to
-        `sklean.cluster.DBSCAN`. By default ``dbscan_kwargs={"eps": 5,
+        `sklearn.cluster.DBSCAN`. By default ``dbscan_kwargs={"eps": 5,
         "min_samples": 3}``.
     split_by_fwcpos : bool, optional
         Split beams by the NIRISS filter wheel position angle, in addition
@@ -207,8 +209,6 @@ def gen_stacked_beams(
     if fit_trace_shift:
         mb.fit_trace_shift(**trace_shift_kwargs)
 
-    from drizzlepac import adrizzle
-
     new_beam_list = []
 
     for filt, pa_info in tqdm(mb.PA.items(), desc="Stacking beams"):
@@ -219,7 +219,13 @@ def gen_stacked_beams(
             if split_by_fwcpos:
                 # Round to avoid numerical noise
                 fwcpos_arr = np.round(
-                    np.asarray([mb.beams[b].beam.fwcpos for b in pa_beam_idxs]), 3
+                    np.asarray(
+                        [
+                            getattr(mb.beams[b].beam, "fwcpos", 0) or 0
+                            for b in pa_beam_idxs
+                        ]
+                    ),
+                    3,
                 )
                 grouped_beam_idxs = []
 
@@ -443,7 +449,7 @@ def gen_stacked_beams(
     )
 
 
-@njit(fastmath=True, parallel=False, cache=True, boundscheck=False)
+@njit(fastmath=False, parallel=False, cache=True, boundscheck=False)
 def shift_and_accumulate_2d(
     in_sci: np.ndarray,
     in_wht: np.ndarray,
@@ -474,49 +480,66 @@ def shift_and_accumulate_2d(
     ny, nx = in_sci.shape
     out_ny, out_nx = out_sci.shape
 
-    for y in range(ny):
-        # Calculate overlapping output y-indices
-        y_shifted = y + dy
-        y0_out = max(0, int(np.floor(y_shifted)))
-        y1_out = min(out_ny - 1, int(np.ceil(y_shifted + 1.0)))
+    # Decompose uniform translation into integer offsets and subpixel fractions
+    iy0 = int(np.floor(dy))
+    fy = dy - iy0
+    fy_inv = 1.0 - fy
 
-        for x in range(nx):
+    ix0 = int(np.floor(dx))
+    fx = dx - ix0
+    fx_inv = 1.0 - fx
+
+    # Precompute the 4 bilinear overlap area fractions
+    w00 = fy_inv * fx_inv
+    w01 = fy_inv * fx
+    w10 = fy * fx_inv
+    w11 = fy * fx
+
+    # Clip input iteration bounds to rows/columns that overlap the output frame
+    y_start = max(0, -iy0 - 1)
+    y_end = min(ny, out_ny - iy0)
+    x_start = max(0, -ix0 - 1)
+    x_end = min(nx, out_nx - ix0)
+
+    for y in range(y_start, y_end):
+        oy0 = y + iy0
+        oy1 = oy0 + 1
+        y0_valid = 0 <= oy0 < out_ny
+        y1_valid = (fy > 0.0) and (0 <= oy1 < out_ny)
+
+        if not (y0_valid or y1_valid):
+            continue
+
+        for x in range(x_start, x_end):
             w_in = in_wht[y, x]
-            if w_in <= 0 or not np.isfinite(w_in):
+            if w_in <= 0.0 or not np.isfinite(w_in):
                 continue
 
             s_in = in_sci[y, x]
             if not np.isfinite(s_in):
                 continue
 
-            x_shifted = x + dx
-            x0_out = max(0, int(np.floor(x_shifted)))
-            x1_out = min(out_nx - 1, int(np.ceil(x_shifted + 1.0)))
+            sw = s_in * w_in
+            ox0 = x + ix0
+            ox1 = ox0 + 1
+            x0_valid = 0 <= ox0 < out_nx
+            x1_valid = (fx > 0.0) and (0 <= ox1 < out_nx)
 
-            for oy in range(y0_out, y1_out + 1):
-                # 1D y-overlap length
-                overlap_y = max(
-                    0.0,
-                    min(oy + 0.5, y_shifted + 0.5) - max(oy - 0.5, y_shifted - 0.5),
-                )
-                if overlap_y <= 0.0:
-                    continue
+            if y0_valid:
+                if x0_valid:
+                    out_sci[oy0, ox0] += sw * w00
+                    out_wht[oy0, ox0] += w_in * w00
+                if x1_valid:
+                    out_sci[oy0, ox1] += sw * w01
+                    out_wht[oy0, ox1] += w_in * w01
 
-                for ox in range(x0_out, x1_out + 1):
-                    # 1D x-overlap length
-                    overlap_x = max(
-                        0.0,
-                        min(ox + 0.5, x_shifted + 0.5) - max(ox - 0.5, x_shifted - 0.5),
-                    )
-                    if overlap_x <= 0.0:
-                        continue
-
-                    # Exact area fraction
-                    f = overlap_x * overlap_y
-                    weight = w_in * f
-
-                    out_sci[oy, ox] += s_in * weight
-                    out_wht[oy, ox] += weight
+            if y1_valid:
+                if x0_valid:
+                    out_sci[oy1, ox0] += sw * w10
+                    out_wht[oy1, ox0] += w_in * w10
+                if x1_valid:
+                    out_sci[oy1, ox1] += sw * w11
+                    out_wht[oy1, ox1] += w_in * w11
 
 
 def get_bounding_cutout_slice(
