@@ -4,60 +4,45 @@ Functions and classes related to multi-region grism fitting.
 
 import multiprocessing
 import os
-import shutil
 import sys
 import traceback
-from collections.abc import Callable
 from copy import deepcopy
 from functools import partial
-from multiprocessing import Lock, Manager, Pool, cpu_count, shared_memory
+from multiprocessing import shared_memory
 from multiprocessing.managers import SharedMemoryManager
 from os import PathLike
 from pathlib import Path
 from time import time
 
-import h5py
 import numpy as np
 import scipy.optimize
 from astropy.io import fits
-from astropy.nddata import block_reduce
 from astropy.table import Table
 from astropy.wcs import WCS
-from bagpipes_extended.pipeline import generate_fit_params, load_photom_bagpipes
-from bagpipes_extended.sed.atlas_fitter import AtlasFitter
-from bagpipes_extended.sed.atlas_generator import AtlasGenerator
 from grizli import utils as grizli_utils
 from grizli.multifit import MultiBeam, drizzle_to_wavelength
+from numba import jit
 from numpy.typing import ArrayLike
-from reproject import reproject_interp
 from tqdm import tqdm
 
-import wfss_tools
-from wfss_tools.grism.alignment import BeamAligner
-from wfss_tools.grism.bagpipes_utils import BagpipesTemplateSampler
-from wfss_tools.grism.fitting_tools import CDNNLS, fennls, fnnls, test_nnls
-
-# from wfss_tools.grism.samplers import GrizliTemplateSampler
+from wfss_tools.grism import float_dtype
+from wfss_tools.grism.samplers import TemplateSampler
 from wfss_tools.grism.specgen import (
     CLOUDY_LINE_MAP,
     check_coverage,
 )
 from wfss_tools.grism.utils import (
     LINE_UP,
-    align_direct_images,
-    gen_stacked_beams,
     log_with_offset,
 )
 from wfss_tools.pipeline.reduction import recursive_merge
-from wfss_tools.sed.binning import bin_and_save
+from wfss_tools.sed.base import SEDFitResult
 
 """
 TODO: remove logic from _gen functions. Instead create template IDs as
 `{seg_id}-{model_id}`.
 Simplify model generation and combine output table columns into "tempID".
 """
-
-from wfss_tools.grism import float_dtype
 
 __all__ = ["MultiRegionFit", "DEFAULT_PLINE"]
 
@@ -75,38 +60,129 @@ class MultiRegionFit:
 
     Parameters
     ----------
-    config_path : PathLike
-        The TOML-formatted configuration file containing the parameters to
-        use for the fit.
+    config : dict | PathLike
+        Either a dictionary, or the TOML-formatted configuration file
+        containing the parameters to use for the grism fit.
     obj_id : int
         The object ID number to fit.
     obj_z : float
         The redshift at which the object should be fitted.
+    beam_path : PathLike | None, optional
+        The location of the aligned/stacked ``*beams.fits`` file produced
+        by Stage 1. If ``None`` (default), defaults to
+        ``<out_dir>/binned_data/<field_name>_<obj_id:0>5>.beams.fits``.
+    binned_data_path : PathLike | None, optional
+        The location of the binned photometry and segmentation map FITS
+        file produced by Stage 1. Required before calling `run_all` or
+        `fit_at_z`.
+    template_sampler : TemplateSampler | None, optional
+        An initialised `~wfss_tools.grism.samplers.TemplateSampler`
+        subclass providing spectral templates for each spatial region.
+    sed_fit_result : SEDFitResult | None, optional
+        Optional Stage 2 output dataclass used to record SED fitting
+        provenance in output FITS headers.
     run_all : bool, optional
         If ``True`` (default), the fit will proceed automatically based on
         the setup described in the configuration file. If ``False``, the
-        configuration file will be parsed, but the individual fitting
-        methods must be called manually.
+        configuration file and inputs will be loaded, but `fit_at_z`
+        must be called manually.
     """
 
     def __init__(
         self,
-        config_path: PathLike,
+        config: dict | PathLike,
         obj_id: int,
         obj_z: float,
+        beam_path: PathLike | None = None,
+        binned_data_path: PathLike | None = None,
+        template_sampler: TemplateSampler | None = None,
+        sed_fit_result: SEDFitResult | None = None,
         run_all: bool = True,
     ):
 
         self.obj_id = obj_id
         self.obj_z = obj_z
+        self.smm = None
 
-        self.smm = SharedMemoryManager()
-        self.smm.start()
+        self.import_config(config)
 
-        self.import_config(config_path)
+        self.beam_path = (
+            Path(beam_path)
+            if beam_path is not None
+            else self.out_dir
+            / "binned_data"
+            / f"{self.field_name}_{self.obj_id:0>5}.beams.fits"
+        )
+        self.binned_data_path = (
+            Path(binned_data_path)
+            if binned_data_path is not None
+            else (
+                Path(sed_fit_result.binned_data_path)
+                if sed_fit_result is not None
+                else None
+            )
+        )
+        self.template_sampler = template_sampler
+        self.sed_fit_result = sed_fit_result
+
+        if self.binned_data_path is not None:
+            self.load_inputs()
 
         if run_all:
             self.run_all()
+
+    def load_inputs(
+        self,
+        beam_path: PathLike | None = None,
+        binned_data_path: PathLike | None = None,
+    ) -> None:
+        """
+        Load the Stage 1 aligned beams, binned photometry, and segmentation map.
+
+        Parameters
+        ----------
+        beam_path : PathLike | None, optional
+            Override ``self.beam_path``.
+        binned_data_path : PathLike | None, optional
+            Override ``self.binned_data_path``.
+
+        Raises
+        ------
+        FileNotFoundError
+            If either ``beam_path`` or ``binned_data_path`` does not exist.
+        ValueError
+            If ``binned_data_path`` has not been set.
+        """
+        if beam_path is not None:
+            self.beam_path = Path(beam_path)
+        if binned_data_path is not None:
+            self.binned_data_path = Path(binned_data_path)
+
+        if self.binned_data_path is None:
+            raise ValueError(
+                "`binned_data_path` must be supplied to load Stage 1 inputs."
+            )
+        if not self.beam_path.is_file():
+            raise FileNotFoundError(
+                f"Aligned beams file does not exist: {self.beam_path}"
+            )
+        if not self.binned_data_path.is_file():
+            raise FileNotFoundError(
+                f"Binned photometry file does not exist: {self.binned_data_path}"
+            )
+
+        self.MB = MultiBeam(beams=str(self.beam_path), **self.multibeam_kwargs)
+        self.ra, self.dec = self.MB.ra, self.MB.dec
+
+        self.regions_phot_cat = Table.read(self.binned_data_path, "PHOT_CAT")
+        self.n_regions = len(self.regions_phot_cat)
+
+        with fits.open(self.binned_data_path) as hdul:
+            self.regions_seg_map = hdul["SEG_MAP"].data.copy()
+            self.regions_seg_hdr = hdul["SEG_MAP"].header.copy()
+            self.regions_seg_wcs = WCS(self.regions_seg_hdr)
+
+        self.regions_seg_ids = np.asarray(self.regions_phot_cat["bin_id"], dtype=int)
 
     def run_all(self):
         """
