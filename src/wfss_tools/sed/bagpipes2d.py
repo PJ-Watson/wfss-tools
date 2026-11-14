@@ -15,7 +15,7 @@ from numpy.typing import ArrayLike
 import wfss_tools
 from wfss_tools.grism.bagpipes_utils import BagpipesTemplateSampler
 from wfss_tools.pipeline.reduction import recursive_merge
-from wfss_tools.sed.base import SEDFitResult, SEDFitter2D
+from wfss_tools.sed.core_2d import SEDFitResult, SEDFitter2D
 
 __all__ = ["Bagpipes2D"]
 

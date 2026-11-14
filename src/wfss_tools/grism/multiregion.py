@@ -36,7 +36,7 @@ from wfss_tools.grism.utils import (
     log_with_offset,
 )
 from wfss_tools.pipeline.reduction import recursive_merge
-from wfss_tools.sed.base import SEDFitResult
+from wfss_tools.sed.core_2d import SEDFitResult
 
 """
 TODO: remove logic from _gen functions. Instead create template IDs as
@@ -289,6 +289,7 @@ class MultiRegionFit:
     def fit_at_z(
         self,
         z: float = 0.0,
+        template_sampler: TemplateSampler | None = None,
         fit_background: bool = True,
         poly_order: int = 0,
         n_samples: int = 3,
@@ -322,6 +323,10 @@ class MultiRegionFit:
         ----------
         z : float, optional
             The redshift at which the object will be fitted, by default 0.
+        template_sampler : TemplateSampler | None, optional
+            An initialised `~wfss_tools.grism.samplers.TemplateSampler`
+            providing spectral templates for each spatial region. If
+            ``None`` (default), uses ``self.template_sampler``.
         fit_background : bool, optional
             Fit a constant background level, by default ``True``.
         poly_order : int, optional
@@ -338,10 +343,9 @@ class MultiRegionFit:
             default ``1.6``, if ``None`` all beams will be used.
         spec_wavs : ArrayLike | None, optional
             The wavelength sampling to use when generating the template
-            spectra from the `bagpipes` posterior distributions. The
-            default value of ``None`` sets this to the
-            :math:`0.96 - 2.3\\mu\\rm{m}` range in :math:`45\\mathring{A}`
-            steps.
+            spectra from the posterior distributions. The default value
+            of ``None`` sets this to the :math:`1.0 - 2.3\\mu\\rm{m}`
+            range in :math:`22.5\\mathring{A}` steps.
         oversamp_factor : int, optional
             The factor by which the region segmentation map is oversampled
             before reprojecting to the beam coordinate system. This
@@ -351,7 +355,7 @@ class MultiRegionFit:
             to a factor of ``1``.
         veldisp : float, optional
             The velocity dispersion of the template spectra in km/s, by
-            default ``500``.
+            default ``50``.
         direct_images : _type_, optional
             WIP, may allow for changing beam direct images at some point.
             By default ``None``.
@@ -438,6 +442,18 @@ class MultiRegionFit:
             Exact form of return still WIP.
         """
 
+        if not hasattr(self, "MB") or not hasattr(self, "regions_seg_ids"):
+            self.load_inputs()
+
+        if template_sampler is not None:
+            self.template_sampler = template_sampler
+
+        if self.template_sampler is None:
+            raise ValueError(
+                "`template_sampler` must be passed to `MultiRegionFit` or "
+                "`fit_at_z()`."
+            )
+
         if nnls_method == "adelie":
             try:
                 # Reset core binding, interferes with python process affinity
@@ -455,7 +471,11 @@ class MultiRegionFit:
         TWO_STAGE = (len(nnls_iters) > 1) | (len(nnls_tol) > 1)
 
         if spec_wavs is None:
-            spec_wavs = np.arange(10000.0, 23000.0, 22.5)
+            spec_wavs = getattr(
+                self.template_sampler,
+                "spec_wavs",
+                np.arange(10000.0, 23000.0, 22.5),
+            )
 
         self.spec_wavs = spec_wavs
 
@@ -494,28 +514,6 @@ class MultiRegionFit:
         else:
             self.fit_bg = False
             A = self.MB.A_poly * 1
-
-        self.template_sampler = BagpipesTemplateSampler(
-            posterior_ids=self.regions_seg_ids,
-            posterior_dir=(self.pipes_dir / "posterior" / self.run_name),
-            seed=seed,
-            cpu_count=cpu_count,
-            cache_all_spectra=cache_spec,
-            veldisp=veldisp,
-            spec_wavs=self.spec_wavs,
-        )
-        # self.template_sampler = GrizliTemplateSampler(
-        #     posterior_dir=(self.pipes_dir / "posterior" / self.run_name),
-        #     seed=seed,
-        #     cpu_count=cpu_count,
-        #     cache_all_spectra=cache_spec,
-        #     veldisp=veldisp,
-        #     spec_wavs=self.spec_wavs,
-        #     redshift=self.obj_z,
-        # )
-        # n_samples = self.template_sampler.Ntemp
-        # n_shifted = 0
-        # n_shifted_samples = 0
 
         self.n_samples = n_samples
         self.n_shifted = n_shifted
@@ -644,8 +642,6 @@ class MultiRegionFit:
         )
 
         if n_prev_iters < total_iters:
-
-            remaining_iters = total_iters - n_prev_iters
 
             output_table.write(
                 self.output_table_path, overwrite=True, format="ascii.ecsv"
@@ -802,7 +798,6 @@ class MultiRegionFit:
                     nnls_solver = CDNNLS(stacked_Ax, y)
                     nnls_solver.run(n_iter=_nnls_i, epsilon=_nnls_t)
                     coeffs = nnls_solver.w
-                    # coeffs[: self.MB.N] -= pedestal
 
                 elif nnls_method == "fnnls":
                     coeffs = fnnls(
@@ -811,7 +806,6 @@ class MultiRegionFit:
                         tolerance=_nnls_t,
                         max_iterations=_nnls_i,
                     )
-                    # coeffs[: self.MB.N] -= pedestal
 
                 elif nnls_method == "fennls":
                     coeffs = fennls(
@@ -820,13 +814,11 @@ class MultiRegionFit:
                         tolerance=_nnls_t,
                         max_iterations=_nnls_i,
                     )
-                    # coeffs[: self.MB.N] -= pedestal
                 else:
 
                     coeffs, rnorm, info = scipy.optimize._nnls._nnls(
                         stacked_Ax, y, _nnls_i
                     )
-                    # coeffs[: self.MB.N] -= pedestal
 
                 # coeffs *= temp_norm
                 # self.stacked_A *= temp_norm[:,None]
@@ -1127,7 +1119,7 @@ class MultiRegionFit:
                     "Number of unique templates",
                 )
                 h.header["CHI2NU"] = (chi2nu, "Reduced chi^2 statistic")
-                h.header = self.add_pipes_info(h.header)
+                h.header = self.add_sed_info(h.header)
             stacked_hdul.extend(hdus)
 
         stacked_hdul.writeto(
@@ -1146,7 +1138,6 @@ class MultiRegionFit:
             saved_lines = []
             self.stacked_A[self.temp_offset :].fill(0.0)
 
-            # shm_model_spectra_name, model_spectra_arr.shape = (
             self.template_sampler.gen_all_spectra_from_seeds(
                 model_seeds=self.best_model_seeds,
                 extra_region_idxs=self.best_id_shifts,
@@ -1155,7 +1146,6 @@ class MultiRegionFit:
                 shared_memory_name=self.shm_model_spectra.name,
                 shared_memory_shape=self.model_spectra_arr.shape,
             )
-            # )
 
             self.process_pool.starmap(fwd_model_fn, enumerate(self.regions_seg_ids))
 
@@ -1168,7 +1158,6 @@ class MultiRegionFit:
 
             self.stacked_A[self.temp_offset :].fill(0.0)
 
-            # for l_i, l_v in enumerate(use_lines):
             for l_i, l_v in tqdm(
                 enumerate(use_lines),
                 desc="Generating emission line maps",
@@ -1178,14 +1167,10 @@ class MultiRegionFit:
                 if not check_coverage(l_v["wave"] * (1 + self.obj_z)):
                     continue
 
-                # log_with_offset(f"Generating map for {l_v["grizli"]}")
-                # print("Generating nebular lines...")
                 self.template_sampler.gen_emline_spectra(emline=l_v["cloudy"])
-                # self.template_sampler.gen_emline_spectra(emline=l_v["grizli"])
 
                 self.model_spectra_arr[:].fill(0.0)
 
-                # full_temp_arr = deepcopy(self.model_spectra_arr)
                 self.model_spectra_arr[:] = (
                     self.template_sampler.model_emline_spectra.reshape(
                         self.model_spectra_arr.shape
@@ -1260,7 +1245,7 @@ class MultiRegionFit:
                         "Number of unique templates",
                     )
                     hdu[0].header["CHI2NU"] = (chi2nu, "Reduced chi^2 statistic")
-                    hdu[0].header = self.add_pipes_info(hdu[0].header)
+                    hdu[0].header = self.add_sed_info(hdu[0].header)
                     for e in [-4, -3, -2, -1]:
                         hdu[e].header["EXTVER"] = l_v["grizli"]
                         hdu[e].header["REDSHIFT"] = (self.obj_z, "Redshift used")
@@ -1321,7 +1306,7 @@ class MultiRegionFit:
 
                 line_hdu.writeto(
                     multireg_out_dir
-                    / f"regions_{self.obj_id:05d}_z_{self.obj_z}_{pline.get("pixscale", 0.06)}arcsec.line.fits",
+                    / f"regions_{self.obj_id:05d}_z_{self.obj_z}_{pline.get('pixscale', 0.06)}arcsec.line.fits",
                     output_verify="silentfix",
                     overwrite=True,
                 )
@@ -1363,7 +1348,7 @@ class MultiRegionFit:
                     )
                     fig.savefig(
                         multireg_out_dir
-                        / f"regions_{self.obj_id:05d}_z_{self.obj_z}_{pline.get("pixscale", 0.06)}arcsec.line.png",
+                        / f"regions_{self.obj_id:05d}_z_{self.obj_z}_{pline.get('pixscale', 0.06)}arcsec.line.png",
                     )
 
         return
@@ -1376,7 +1361,7 @@ class MultiRegionFit:
         Ensure that all attributes are correctly destroyed.
         """
 
-        if hasattr(self, "template_sampler"):
+        if hasattr(self, "template_sampler") and self.template_sampler is not None:
             self.template_sampler.close()
             del self.template_sampler
 
@@ -1385,7 +1370,7 @@ class MultiRegionFit:
             self._process_pool.terminate()
             del self._process_pool
 
-        if hasattr(self, "smm"):
+        if hasattr(self, "smm") and self.smm is not None:
             self.smm.shutdown()
             del self.smm
 
@@ -1414,7 +1399,6 @@ class MultiRegionFit:
                 unit_spec = np.zeros(W, dtype=float_dtype)
                 unit_spec[w] = 1.0
                 res = np.zeros(L, dtype=float_dtype)
-                # res[so] = interp_conserve_c(lam_beam[so], self.spec_wavs, unit_spec, integrate=1, left=0, right=0)
                 # 1. Pre-compute 1D Resampling Matrix R per beam (use integrate=0 for flux density)
                 res[so] = interp_conserve_c(
                     lam_beam[so],
@@ -1433,7 +1417,6 @@ class MultiRegionFit:
             for beam_idx, beam in enumerate(self.MB.beams):
                 thumb = beam.beam.direct
                 seg_map = beam.regions_seg_map
-                shd = beam.beam.sh
                 x0 = beam.beam.x0
 
                 # Match valid bounds
@@ -1596,7 +1579,7 @@ class MultiRegionFit:
 
     def initialise_shared_memory(self, n_spec_per_region: int, memmap: bool = False):
         """
-        Intitialise the shared memory arrays for multiprocessing.
+        Initialise the shared memory arrays for multiprocessing.
 
         Currently constructs one array for the sampled spectra, and one
         to hold the dispersed spectra and any polynomial or background
@@ -1618,6 +1601,10 @@ class MultiRegionFit:
         MemoryError
             If the amount of memory requested exceeds the current amount available.
         """
+
+        if self.smm is None:
+            self.smm = SharedMemoryManager()
+            self.smm.start()
 
         # Initialise the shared memory for the sampled spectra
         model_spectra_arr_shape = (
@@ -1935,6 +1922,9 @@ def init_forward_model(
     beam_offsets: list,
     beams=None,
 ):
+    """
+    Initialise worker globals once per process for sparse forward modelling.
+    """
     global shm_model_spectra, shared_model_spectra
     shm_model_spectra = shared_memory.SharedMemory(
         name=shared_model_spectra_name, create=False
@@ -1977,11 +1967,7 @@ def init_forward_model(
                     "flat_index": b.flat_index.astype(np.int64),
                     "yfrac_beam": b.yfrac_beam.astype(float_dtype),
                     "sens_beam": b.sensitivity_beam.astype(float_dtype),
-                    # "dlam_beam": np.abs(np.gradient(b.lam_beam)).astype(float_dtype), # NEW: Dispersion
-                    # "cgs_factor": float(1e17), # NEW: Match grizli's is_cgs=True scaling
-                    "cgs_factor": (
-                        1
-                    ),  # float(1e17), # NEW: Match grizli's is_cgs=True scaling
+                    "cgs_factor": 1,  # Match grizli's is_cgs=True scaling
                     "shg_x": int(b.sh_beam[1]),
                     "nl": int(np.prod(b.sh_beam)),
                     "fit_mask": beam.fit_mask,
@@ -2077,7 +2063,6 @@ def worker_forward_model(
                     meta["flat_index"],
                     meta["yfrac_beam"],
                     meta["sens_beam"],
-                    # meta["dlam_beam"],
                     meta["cgs_factor"],
                     meta["shg_x"],
                     meta["nl"],
