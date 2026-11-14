@@ -33,6 +33,7 @@ from reproject import reproject_interp
 from tqdm import tqdm
 
 import wfss_tools
+from wfss_tools.grism.alignment import BeamAligner
 from wfss_tools.grism.bagpipes_utils import BagpipesTemplateSampler
 from wfss_tools.grism.fitting_tools import CDNNLS, fennls, fnnls, test_nnls
 
@@ -512,83 +513,22 @@ class MultiRegionFit:
             raise an error.
         """
 
-        binned_data_dir = self.out_dir / "binned_data"
-        binned_data_dir.mkdir(exist_ok=True, parents=True)
-
-        new_beam_loc = (
-            binned_data_dir / f"{self.field_name}_{self.obj_id:0>5}.beams.fits"
+        align_obj = BeamAligner(
+            self.obj_id,
+            info_dict=self.info_dict,
+            field_name=self.field_name,
+            use_stacks=use_stacks,
+            stack_beam_kwargs=stack_beam_kwargs,
+            multibeam_kwargs=multibeam_kwargs,
+            binning_kwargs=binning_kwargs,
+            root_dir=self.root_dir,
+            out_dir=self.out_dir,
+            extractions_dir=self.extractions_dir,
         )
 
-        # Give a descriptive name for the binned data
-        binned_name = (
-            f"{self.obj_id}_{binning_kwargs["bin_scheme"]}_"
-            f"{binning_kwargs["bin_diameter"]}_{binning_kwargs["target_sn"]}"
-            f"_{binning_kwargs["sn_filter"]}"
-        )
-        binned_data_path = binned_data_dir / f"{binned_name}_data.fits"
+        align_obj.run_all()
 
-        if not binned_data_path.is_file():
-            try:
-                multib = MultiBeam(
-                    str(new_beam_loc),
-                    **multibeam_kwargs,
-                )
-            except:
-
-                if beams_path is None:
-
-                    beams_path = [
-                        *self.extractions_dir.glob(f"**/*{self.obj_id:0>5}.beams.fits")
-                    ]
-                    if len(beams_path) >= 1:
-                        beams_path = [str(b) for b in beams_path]
-                    else:
-                        raise IOError(
-                            f"Original beams file does not exist in {self.extractions_dir}"
-                        )
-
-                if multibeam_kwargs is None:
-                    multibeam_kwargs = self.multibeam_kwargs
-
-                if len(stack_beam_kwargs) == 0:
-                    stack_beam_kwargs = self.stack_beam_kwargs
-
-                if use_stacks:
-                    multib = gen_stacked_beams(
-                        beams_path,
-                        **stack_beam_kwargs,
-                        **multibeam_kwargs,
-                    )
-                else:
-                    multib = MultiBeam(
-                        beams_path,
-                        **multibeam_kwargs,
-                    )
-
-                # Write the realigned and (stacked?) beam to a file
-                beam_hdul = multib.write_master_fits(get_hdu=True)
-                beam_hdul.writeto(new_beam_loc, overwrite=True)
-
-            # Align all images to the new beam
-            aligned_info_dict = align_direct_images(
-                multib.beams[0],
-                info_dict=self.info_dict,
-                out_dir=binned_data_dir / f"{self.obj_id:0>5}",
-                overwrite=False,
-                bounding_cutout_kwargs=bounding_cutout_kwargs,
-            )
-
-            _seg = fits.getdata(new_beam_loc, "SEG")
-            bin_and_save(
-                obj_id=self.obj_id,
-                out_dir=binned_data_dir,
-                seg_map=_seg,
-                info_dict=aligned_info_dict,
-                binned_name=binned_name,
-                **binning_kwargs,
-            )
-
-        return new_beam_loc, binned_data_path
+        exit()
 
     def add_pipes_info(self, header: fits.Header) -> fits.Header:
         """
